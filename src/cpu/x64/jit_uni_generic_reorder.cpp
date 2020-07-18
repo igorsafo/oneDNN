@@ -79,7 +79,6 @@ struct jit_generic_kernel_t : public jit_generator {
 
     jit_generic_kernel_t(const tr::prb_t &prb)
         : jit_generator(), prb_(prb) {
-        this->ker_ = (decltype(ker_))(ker_start + ker_off);
     }
 
     void operator()(const void *in, void *out) const { ker_(in, out); }
