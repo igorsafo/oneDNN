@@ -81,20 +81,18 @@ struct jit_generic_kernel_t : public jit_generator {
     jit_generic_kernel_t(const tr::prb_t &prb)
         : jit_generator(), prb_(prb) {
         generate();
-        ker_ = (void (*)(void *, void *))getCode();
+        ker_ = (void (*)(const void *, void *))getCode();
     }
 
     Address addr_n(int d) {
-        return ptr[reg_ptr_in + reg_off_in + i_off * itype_sz];
+        return ptr[reg_iptr]; // FIXME
     }
 
     bool evaluate_predicate(int d) {
         if (prb_.predicates.count(d) == 0) return false;
-        const auto &predicate = prb_.predicates[d];
+        const auto &predicate = prb_.predicates.at(d);
 
-        auto reg_tmp = reg_pred_evaluation[0];
-        assert(reg_tmp == rax); // mul
-        auto reg_acc = reg_pred_evaluation[1];
+        auto reg_acc = reg_pred_evaluation;
 
         // free dimension
         if (predicate.siblings.size() == 0) {
@@ -103,15 +101,15 @@ struct jit_generic_kernel_t : public jit_generator {
         }
 
         // connected dimension
-        xor_(reg_acc, reg_acc, reg_acc);
+        xor_(reg_acc, reg_acc);
         for (size_t sib = 0; sib < predicate.siblings.size(); ++sib) {
             int n = predicate.siblings[sib];
             if (n < NREGS_N)
                 mov(reg_tmp, reg_n(n));
             else
                 mov(reg_tmp, addr_n(n));
-            mul(predicate.factors[sib]);
-            add(reg_acc, reg_acc, reg_tmp);
+            mul_by_const(reg_tmp, reg_tmp2, (int)predicate.factors[sib]);
+            add(reg_acc, reg_tmp);
         }
         cmp(reg_acc, predicate.restriction);
         return true;
@@ -120,17 +118,17 @@ struct jit_generic_kernel_t : public jit_generator {
     void generate() {
         preamble();
 
-        xor_(reg_ioff, reg_ioff, reg_ioff);
-        xor_(reg_ooff, reg_ooff, reg_ooff);
+        xor_(reg_ioff, reg_ioff);
+        xor_(reg_ooff, reg_ooff);
 
         std::vector<Label> l_begin(prb_.ndims), l_end(prb_.ndims);
 
         assert(prb_.ndims <= NREGS_N);
         for (int d = 0; d < prb_.ndims; ++d) {
-            xor_(reg_n(d), reg_n(d), reg_n(d));
-            L(l_begin(d));
+            xor_(reg_n(d), reg_n(d));
+            L(l_begin[d]);
             if (evaluate_predicate(d))
-                jge(l_end(d));
+                jge(l_end[d]);
         }
 
         vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
@@ -138,16 +136,16 @@ struct jit_generic_kernel_t : public jit_generator {
 
         for (int d = prb_.ndims - 1; d >= 0; --d) {
             inc(reg_n(d));
-            jmp(l_begin(d));
+            jmp(l_begin[d]);
 
-            L(l_end(d));
+            L(l_end[d]);
 
             mov(reg_tmp, reg_n(d));
-            imul(reg_tmp, prb_.nodes[d].is * sizeof(float));
+            mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].is * sizeof(float)));
             sub(reg_ioff, reg_tmp);
 
             mov(reg_tmp, reg_n(d));
-            imul(reg_tmp, prb_.nodes[d].os * sizeof(float));
+            mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].os * sizeof(float)));
             sub(reg_ooff, reg_tmp);
         }
 
@@ -161,9 +159,10 @@ private:
     void (*ker_)(const void *in, void *out) = nullptr;
 
     Reg64 reg_tmp = rbx;
-    static Reg64 reg_pred_evaluation[2] = { rax, rbx };
+    Reg64 reg_tmp2 = r15;
+    Reg64 reg_pred_evaluation = rax;
 
-    constexpr int NREGS_N = 4;
+    static constexpr int NREGS_N = 4;
     Reg64 reg_n(int d) {
         static Reg64 regs[NREGS_N] = { r8, r9, r10, r11 };
         return regs[d];
@@ -171,6 +170,9 @@ private:
 
     Reg64 reg_iptr = rdi;
     Reg64 reg_optr = rsi;
+
+    Reg64 reg_ioff = r12;
+    Reg64 reg_ooff = r13;
 };
 
 } // namespace tr
@@ -201,7 +203,6 @@ struct jit_uni_generic_reorder_t : public primitive_t {
 
                 {
                     const auto &src_dims = src_md->dims;
-                    const auto &src_blk = src_md->format_desc.blocking;
 
                     const auto n = src_dims[0];
                     const auto C = utils::div_up(src_dims[1], 16);
@@ -209,23 +210,24 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                     const auto h = src_dims[2];
                     const auto w = src_dims[3];
 
-                    prb.nodes[0] = {16, h * w, 1};
-                    prb.nodes[1] = {w, 1, 16};
-                    prb.nodes[2] = {h, w, w * 16};
-                    prb.nodes[3] = {C, 16 * h * w, 16 * h * w};
-                    prb.nodes[4] = {n, c * h * w, C * h * w * 16};
+                    prb.nodes[0] = {(size_t)16, h * w, 1, 0};
+                    prb.nodes[1] = {(size_t)w, 1, 16, 0};
+                    prb.nodes[2] = {(size_t)h, w, w * 16, 0};
+                    prb.nodes[3] = {(size_t)C, 16 * h * w, 16 * h * w, 0};
+                    prb.nodes[4] = {(size_t)n, c * h * w, C * h * w * 16, 0};
 
                     prb.predicates = {
-                        {0, {{0, 3}, {1, 16}, c}},
-                        {1, {{}, {}, w}},
-                        {2, {{}, {}, h}},
-                        {3, {{0, 3}, {1, 16}, c}},
-                        {4, {{}, {}, n}},
+                        {0, {{0, 3}, {1, 16}, (size_t)c}},
+                        {1, {{}, {}, (size_t)w}},
+                        {2, {{}, {}, (size_t)h}},
+                        {3, {{0, 3}, {1, 16}, (size_t)c}},
+                        {4, {{}, {}, (size_t)n}},
                     };
                 }
             };
 
             gen_prb_nchw_to_nChw16c(prb, src_md, dst_md);
+            return status::success;
 
 
             if (prb_init_status != status::success) return prb_init_status;
@@ -278,6 +280,8 @@ struct jit_uni_generic_reorder_t : public primitive_t {
     status_t execute(const exec_ctx_t &ctx) const override {
         auto in = CTX_IN_MEM(const char *, DNNL_ARG_FROM);
         auto out = CTX_OUT_MEM(char *, DNNL_ARG_TO);
+
+        (*kernel_)(in, out);
 
         return status::success;
     }
