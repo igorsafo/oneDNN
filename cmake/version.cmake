@@ -40,10 +40,12 @@ if(NOT GIT_FOUND OR RESULT)
     set(DNNL_VERSION_HASH "N/A")
 endif()
 
+if(NOT EXISTS "${PROJECT_BINARY_DIR}/include/dnnl_version.h")
 configure_file(
     "${PROJECT_SOURCE_DIR}/include/dnnl_version.h.in"
     "${PROJECT_BINARY_DIR}/include/dnnl_version.h"
 )
+endif()
 
 if(WIN32)
     string(TIMESTAMP DNNL_VERSION_YEAR "%Y")
