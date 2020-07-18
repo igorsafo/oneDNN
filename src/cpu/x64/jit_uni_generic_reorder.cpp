@@ -100,7 +100,7 @@ struct jit_generic_kernel_t : public jit_generator {
             return true;
         }
 
-        // connected dimension
+        // connected dimensions
         xor_(reg_acc, reg_acc);
         for (size_t sib = 0; sib < predicate.siblings.size(); ++sib) {
             int n = predicate.siblings[sib];
@@ -118,25 +118,27 @@ struct jit_generic_kernel_t : public jit_generator {
     void generate() {
         preamble();
 
+        for (int d = prb_.ndims - 1; d >= 0; --d) xor_(reg_n(d), reg_n(d));
         xor_(reg_ioff, reg_ioff);
         xor_(reg_ooff, reg_ooff);
 
         std::vector<Label> l_begin(prb_.ndims), l_end(prb_.ndims);
 
         assert(prb_.ndims <= NREGS_N);
-        for (int d = 0; d < prb_.ndims; ++d) {
-            xor_(reg_n(d), reg_n(d));
+        for (int d = prb_.ndims - 1; d >= 0; --d) {
             L(l_begin[d]);
             if (evaluate_predicate(d))
-                jge(l_end[d]);
+                jge(l_end[d], T_NEAR);
         }
 
         vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
         vmovss(ptr[reg_optr + reg_ooff], xmm0);
 
-        for (int d = prb_.ndims - 1; d >= 0; --d) {
+        for (int d = 0; d < prb_.ndims; ++d) {
             inc(reg_n(d));
-            jmp(l_begin[d]);
+            add(reg_ioff, (int)(prb_.nodes[d].is * sizeof(float)));
+            add(reg_ooff, (int)(prb_.nodes[d].os * sizeof(float)));
+            jmp(l_begin[d], T_NEAR);
 
             L(l_end[d]);
 
@@ -147,12 +149,17 @@ struct jit_generic_kernel_t : public jit_generator {
             mov(reg_tmp, reg_n(d));
             mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].os * sizeof(float)));
             sub(reg_ooff, reg_tmp);
+
+            xor_(reg_n(d), reg_n(d));
         }
 
         postamble();
     }
 
-    void operator()(const void *in, void *out) const { ker_(in, out); }
+    void operator()(const void *in, void *out) const {
+        printf("ker:%p\n", ker_);
+        ker_(in, out);
+    }
 
 private:
     const prb_t &prb_;
@@ -162,9 +169,10 @@ private:
     Reg64 reg_tmp2 = r15;
     Reg64 reg_pred_evaluation = rax;
 
-    static constexpr int NREGS_N = 4;
+    static constexpr int NREGS_N = 5;
     Reg64 reg_n(int d) {
-        static Reg64 regs[NREGS_N] = { r8, r9, r10, r11 };
+        assert(d < NREGS_N);
+        static Reg64 regs[NREGS_N] = { r8, r9, r10, r11, r14 };
         return regs[d];
     }
 
@@ -188,27 +196,44 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 const memory_desc_t *dst_md) {
             auto prb = tr::prb_t();
 
-            status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
+            // status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
             // nchw -> nChw16c
             auto gen_prb_nchw_to_nChw16c = [] (tr::prb_t &prb,
                     const memory_desc_t *src_md, const memory_desc_t *dst_md) {
+                auto src_d = memory_desc_wrapper(src_md);
+                auto dst_d = memory_desc_wrapper(dst_md);
+                auto &src_bd = src_d.blocking_desc();
+                auto &dst_bd = dst_d.blocking_desc();
+
+                const auto &src_dims = src_md->dims;
+
+                const auto n = src_dims[0];
+                const auto c = src_dims[1];
+                const auto h = src_dims[2];
+                const auto w = src_dims[3];
+
+                bool ok = true
+                    && src_bd.strides[0] >= src_bd.strides[1]
+                    && src_bd.strides[1] >= src_bd.strides[2]
+                    && src_bd.strides[2] >= src_bd.strides[3]
+                    && src_bd.inner_nblks == 0
+                    && dst_bd.strides[0] >= dst_bd.strides[1]
+                    && dst_bd.strides[1] >= dst_bd.strides[2]
+                    && dst_bd.strides[2] >= dst_bd.strides[3]
+                    && dst_bd.inner_nblks == 1;
+                if (!ok) return false;
+
                 prb.itype = src_md->data_type;
                 prb.otype = dst_md->data_type;
-                prb.ndims = src_md->ndims;
-                prb.ioff = memory_desc_wrapper(src_md).offset0();
-                prb.ooff = memory_desc_wrapper(dst_md).offset0();
+                prb.ndims = 5; // src_md->ndims;
+                prb.ioff = src_d.offset0();
+                prb.ooff = dst_d.offset0();
 
                 prb.scale_type = tr::scale_type_t::NONE;
                 prb.beta = 0.0f;
 
                 {
-                    const auto &src_dims = src_md->dims;
-
-                    const auto n = src_dims[0];
-                    const auto C = utils::div_up(src_dims[1], 16);
-                    const auto c = src_dims[1];
-                    const auto h = src_dims[2];
-                    const auto w = src_dims[3];
+                    const auto C = utils::div_up(c, 16);
 
                     prb.nodes[0] = {(size_t)16, h * w, 1, 0};
                     prb.nodes[1] = {(size_t)w, 1, 16, 0};
@@ -224,12 +249,14 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                         {4, {{}, {}, (size_t)n}},
                     };
                 }
+
+                return true;
             };
 
-            gen_prb_nchw_to_nChw16c(prb, src_md, dst_md);
-            return status::success;
+            if (!gen_prb_nchw_to_nChw16c(prb, src_md, dst_md))
+                return status::unimplemented;
 
-
+#if 0
             if (prb_init_status != status::success) return prb_init_status;
 
             DEBUG({
@@ -253,6 +280,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 printf("tile : ");
                 prb_dump(prb);
             });
+#endif
 
             if (!tr::jit_generic_kernel_t::applicable(prb)) {
                 return status::unimplemented;
