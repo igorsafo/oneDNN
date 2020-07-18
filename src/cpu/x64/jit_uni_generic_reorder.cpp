@@ -121,7 +121,6 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 printf("smpl : ");
                 prb_dump(prb);
             });
-            prb_tile_normalize(prb);
             DEBUG({
                 printf("tile : ");
                 prb_dump(prb);
