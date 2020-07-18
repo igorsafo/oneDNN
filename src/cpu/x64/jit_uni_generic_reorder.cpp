@@ -161,6 +161,14 @@ private:
     std::unique_ptr<tr::jit_generic_kernel_t> kernel_;
 };
 
+status_t jit_uni_generic_reorder_create(reorder_pd_t **reorder_pd,
+        engine_t *engine, const primitive_attr_t *attr, engine_t *src_engine,
+        const memory_desc_t *src_md, engine_t *dst_engine,
+        const memory_desc_t *dst_md) {
+    return jit_uni_generic_reorder_t::pd_t::create(reorder_pd, engine, attr,
+                src_engine, src_md, dst_engine, dst_md);
+}
+
 } // namespace x64
 } // namespace cpu
 } // namespace impl
