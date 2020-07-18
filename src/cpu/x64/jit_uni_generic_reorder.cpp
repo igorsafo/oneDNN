@@ -79,12 +79,97 @@ struct jit_generic_kernel_t : public jit_generator {
 
     jit_generic_kernel_t(const tr::prb_t &prb)
         : jit_generator(), prb_(prb) {
+        generate();
+        ker_ = (void (*)(void *, void *))getCode();
+    }
+
+    Address addr_n(int d) {
+        return ptr[reg_ptr_in + reg_off_in + i_off * itype_sz];
+    }
+
+    bool evaluate_predicate(int d) {
+        if (prb_.predicates.count(d) == 0) return false;
+        const auto &predicate = prb_.predicates[d];
+
+        auto reg_tmp = reg_pred_evaluation[0];
+        assert(reg_tmp == rax); // mul
+        auto reg_acc = reg_pred_evaluation[1];
+
+        // free dimension
+        if (predicate.siblings.size() == 0) {
+            cmp(reg_n(d), predicate.restriction);
+            return true;
+        }
+
+        // connected dimension
+        xor_(reg_acc, reg_acc, reg_acc);
+        for (size_t sib = 0; sib < predicate.siblings.size(); ++sib) {
+            int n = predicate.siblings[sib];
+            if (n < NREGS_N)
+                mov(reg_tmp, reg_n(n));
+            else
+                mov(reg_tmp, addr_n(n));
+            mul(predicate.factors[sib]);
+            add(reg_acc, reg_acc, reg_tmp);
+        }
+        cmp(reg_acc, predicate.restriction);
+        return true;
+    }
+
+    void generate() {
+        preamble();
+
+        xor_(reg_ioff, reg_ioff, reg_ioff);
+        xor_(reg_ooff, reg_ooff, reg_ooff);
+
+        std::vector<Label> l_begin(prb_.ndims), l_end(prb_.ndims);
+
+        assert(prb_.ndims <= NREGS_N);
+        for (int d = 0; d < prb_.ndims; ++d) {
+            xor_(reg_n(d), reg_n(d), reg_n(d));
+            L(l_begin(d));
+            if (evaluate_predicate(d))
+                jge(l_end(d));
+        }
+
+        vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
+        vmovss(ptr[reg_optr + reg_ooff], xmm0);
+
+        for (int d = prb_.ndims - 1; d >= 0; --d) {
+            inc(reg_n(d));
+            jmp(l_begin(d));
+
+            L(l_end(d));
+
+            mov(reg_tmp, reg_n(d));
+            imul(reg_tmp, prb_.nodes[d].is * sizeof(float));
+            sub(reg_ioff, reg_tmp);
+
+            mov(reg_tmp, reg_n(d));
+            imul(reg_tmp, prb_.nodes[d].os * sizeof(float));
+            sub(reg_ooff, reg_tmp);
+        }
+
+        postamble();
     }
 
     void operator()(const void *in, void *out) const { ker_(in, out); }
+
 private:
     const prb_t &prb_;
     void (*ker_)(const void *in, void *out) = nullptr;
+
+    Reg64 reg_tmp = rbx;
+    static Reg64 reg_pred_evaluation[2] = { rax, rbx };
+
+    constexpr int NREGS_N = 4;
+    Reg64 reg_n(int d) {
+        static Reg64 regs[NREGS_N] = { r8, r9, r10, r11 };
+        return regs[d];
+    }
+
+    Reg64 reg_iptr = rdi;
+    Reg64 reg_optr = rsi;
 };
 
 } // namespace tr
