@@ -42,6 +42,13 @@ struct node_t {
 
 enum class scale_type_t { NONE, COMMON, MANY };
 
+// sum{i}(siblings[i] * factors[i]) < restriction
+struct pred_t {
+    std::vector<int> siblings;
+    std::vector<int> factors;
+    size_t restriction;
+};
+
 struct prb_t {
     data_type_t itype;
     data_type_t otype;
@@ -51,6 +58,8 @@ struct prb_t {
     ptrdiff_t ooff;
     scale_type_t scale_type;
     float beta;
+
+    std::map<int, pred_t> predicates;
 };
 
 status_t prb_init(prb_t &prb, const memory_desc_t &imd,
