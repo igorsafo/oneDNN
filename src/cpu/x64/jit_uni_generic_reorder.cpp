@@ -62,6 +62,7 @@ namespace x64 {
 
 namespace tr {
 
+// nchw -> nChw16c
 struct jit_generic_kernel_t : public jit_generator {
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_generic_kernel_t)
 
@@ -186,6 +187,47 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             auto prb = tr::prb_t();
 
             status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
+            // nchw -> nChw16c
+            auto gen_prb_nchw_to_nChw16c = [] (tr::prb_t &prb,
+                    const memory_desc_t *src_md, const memory_desc_t *dst_md) {
+                prb.itype = src_md->data_type;
+                prb.otype = dst_md->data_type;
+                prb.ndims = src_md->ndims;
+                prb.ioff = memory_desc_wrapper(src_md).offset0();
+                prb.ooff = memory_desc_wrapper(dst_md).offset0();
+
+                prb.scale_type = tr::scale_type_t::NONE;
+                prb.beta = 0.0f;
+
+                {
+                    const auto &src_dims = src_md->dims;
+                    const auto &src_blk = src_md->format_desc.blocking;
+
+                    const auto n = src_dims[0];
+                    const auto C = utils::div_up(src_dims[1], 16);
+                    const auto c = src_dims[1];
+                    const auto h = src_dims[2];
+                    const auto w = src_dims[3];
+
+                    prb.nodes[0] = {16, h * w, 1};
+                    prb.nodes[1] = {w, 1, 16};
+                    prb.nodes[2] = {h, w, w * 16};
+                    prb.nodes[3] = {C, 16 * h * w, 16 * h * w};
+                    prb.nodes[4] = {n, c * h * w, C * h * w * 16};
+
+                    prb.predicates = {
+                        {0, {{0, 3}, {1, 16}, c}},
+                        {1, {{}, {}, w}},
+                        {2, {{}, {}, h}},
+                        {3, {{0, 3}, {1, 16}, c}},
+                        {4, {{}, {}, n}},
+                    };
+                }
+            };
+
+            gen_prb_nchw_to_nChw16c(prb, src_md, dst_md);
+
+
             if (prb_init_status != status::success) return prb_init_status;
 
             DEBUG({
