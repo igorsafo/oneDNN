@@ -1748,7 +1748,7 @@ status_t jit_uni_reorder_create(reorder_pd_t **reorder_pd, engine_t *engine,
         ret = jit_uni_reorder_t::pd_t::create(reorder_pd, engine, attr,
                 src_engine, src_md, dst_engine, dst_md);
     if (status::success != ret)
-        ret = jit_uni_generic_reorder_t::pd_t::create(reorder_pd, engine, attr,
+        ret = jit_uni_generic_reorder_create(reorder_pd, engine, attr,
                 src_engine, src_md, dst_engine, dst_md);
     return ret;
 }
