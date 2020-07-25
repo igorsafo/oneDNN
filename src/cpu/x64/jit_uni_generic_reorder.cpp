@@ -108,7 +108,8 @@ struct jit_generic_kernel_t : public jit_generator {
                 mov(reg_tmp, reg_n(n));
             else
                 mov(reg_tmp, addr_n(n));
-            mul_by_const(reg_tmp, reg_tmp2, (int)predicate.factors[sib]);
+            // mul_by_const(reg_tmp, reg_tmp2, (int)predicate.factors[sib]);
+            imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
             add(reg_acc, reg_tmp);
         }
         cmp(reg_acc, predicate.restriction);
@@ -157,7 +158,7 @@ struct jit_generic_kernel_t : public jit_generator {
     }
 
     void operator()(const void *in, void *out) const {
-        printf("ker:%p\n", ker_);
+        // printf("ker:%p\n", ker_);
         ker_(in, out);
     }
 
@@ -194,6 +195,13 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 const primitive_attr_t *attr, engine_t *src_engine,
                 const memory_desc_t *src_md, engine_t *dst_engine,
                 const memory_desc_t *dst_md) {
+            int enable = -1;
+            if (enable == -1) {
+                const char *env = ::getenv("GR");
+                enable = !env || *env == '1';
+            }
+            if (!enable) return status::unimplemented;
+
             auto prb = tr::prb_t();
 
             // status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
