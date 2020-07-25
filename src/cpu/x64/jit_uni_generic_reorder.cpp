@@ -116,17 +116,18 @@ struct jit_generic_kernel_t : public jit_generator {
         return true;
     }
 
-    bool evaluate_predicate(int d, int unroll, const Label &l_unroll) {
-        if (prb_.predicates.count(d) == 0) return false;
+    void maybe_evaluate_predicate(int d, int unroll, const Label &l_unroll, const Label &l_end) {
+        if (prb_.predicates.count(d) == 0) return;
         const auto &predicate = prb_.predicates.at(d);
 
         auto reg_acc = reg_pred_evaluation;
 
+        cmp(reg_n(d), prb_.nodes[d].n);
+        jge(l_end, T_NEAR);
+
         // free dimension
-        if (predicate.siblings.size() == 0) {
-            cmp(reg_n(d), predicate.restriction);
-            return true;
-        }
+        if (predicate.siblings.size() == 0)
+            return;
 
         // connected dimensions
         xor_(reg_acc, reg_acc);
@@ -136,7 +137,6 @@ struct jit_generic_kernel_t : public jit_generator {
 
             if (_sib == 0) {
                 int x = utils::div_up(predicate.restriction, predicate.factors[sib]) - 1;
-                printf("x:%d\n", x);
                 cmp(reg_n(n), x);
                 jl(l_unroll, T_NEAR);
             }
@@ -152,7 +152,7 @@ struct jit_generic_kernel_t : public jit_generator {
         cmp(reg_acc, predicate.restriction - unroll);
         jle(l_unroll, T_NEAR);
         cmp(reg_acc, predicate.restriction);
-        return true;
+        jge(l_end, T_NEAR);
     }
 
     void generate() {
@@ -176,8 +176,7 @@ struct jit_generic_kernel_t : public jit_generator {
         L(l_begin[0]);
         int unroll = 4;
         Label l_unroll;
-        if (evaluate_predicate(0, unroll, l_unroll))
-            jge(l_end[0], T_NEAR);
+        maybe_evaluate_predicate(0, unroll, l_unroll, l_end[0]);
 
         { // 1
             vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
@@ -210,6 +209,7 @@ struct jit_generic_kernel_t : public jit_generator {
         sub(reg_ioff, reg_tmp);
 
         mov(reg_tmp, reg_n(0));
+        // imul(reg_tmp, reg_tmp, (int)(prb_.nodes[0].os * sizeof(float)));
         mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[0].os * sizeof(float)));
         sub(reg_ooff, reg_tmp);
 
@@ -231,7 +231,7 @@ struct jit_generic_kernel_t : public jit_generator {
             sub(reg_ioff, reg_tmp);
 
             mov(reg_tmp, reg_n(d));
-            mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].os * sizeof(float)));
+            imul(reg_tmp, reg_tmp, (int)(prb_.nodes[d].os * sizeof(float)));
             sub(reg_ooff, reg_tmp);
 
             xor_(reg_n(d), reg_n(d));
