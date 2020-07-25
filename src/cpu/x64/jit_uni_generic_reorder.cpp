@@ -144,7 +144,8 @@ struct jit_generic_kernel_t : public jit_generator {
             L(l_end[d]);
 
             mov(reg_tmp, reg_n(d));
-            mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].is * sizeof(float)));
+            // mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].is * sizeof(float)));
+            imul(reg_tmp, reg_tmp, (int)(prb_.nodes[d].is * sizeof(float)));
             sub(reg_ioff, reg_tmp);
 
             mov(reg_tmp, reg_n(d));
