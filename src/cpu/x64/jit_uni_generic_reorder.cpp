@@ -116,7 +116,7 @@ struct jit_generic_kernel_t : public jit_generator {
         return true;
     }
 
-    bool evaluate_predicate(int d, const Label &l_unroll) {
+    bool evaluate_predicate(int d, int unroll, const Label &l_unroll) {
         if (prb_.predicates.count(d) == 0) return false;
         const auto &predicate = prb_.predicates.at(d);
 
@@ -130,8 +130,17 @@ struct jit_generic_kernel_t : public jit_generator {
 
         // connected dimensions
         xor_(reg_acc, reg_acc);
-        for (size_t sib = 0; sib < predicate.siblings.size(); ++sib) {
+        for (size_t _sib = 0; _sib < predicate.siblings.size(); ++_sib) {
+            int sib = predicate.siblings.size() - 1 - _sib;
             int n = predicate.siblings[sib];
+
+            if (_sib == 0) {
+                int x = utils::div_up(predicate.restriction, predicate.factors[sib]) - 1;
+                printf("x:%d\n", x);
+                cmp(reg_n(n), x);
+                jl(l_unroll, T_NEAR);
+            }
+
             if (n < NREGS_N)
                 mov(reg_tmp, reg_n(n));
             else
@@ -140,8 +149,8 @@ struct jit_generic_kernel_t : public jit_generator {
                 imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
             add(reg_acc, reg_tmp);
         }
-        cmp(reg_acc, predicate.restriction - 4);
-        jle(l_unroll);
+        cmp(reg_acc, predicate.restriction - unroll);
+        jle(l_unroll, T_NEAR);
         cmp(reg_acc, predicate.restriction);
         return true;
     }
@@ -165,8 +174,9 @@ struct jit_generic_kernel_t : public jit_generator {
 
 
         L(l_begin[0]);
+        int unroll = 4;
         Label l_unroll;
-        if (evaluate_predicate(0, l_unroll))
+        if (evaluate_predicate(0, unroll, l_unroll))
             jge(l_end[0], T_NEAR);
 
         { // 1
@@ -179,17 +189,17 @@ struct jit_generic_kernel_t : public jit_generator {
             jmp(l_begin[0], T_NEAR);
         }
 
-        { // 4
+        { // unroll
             L(l_unroll);
-            for (int i = 0; i < 4; ++i)
-                vmovss(Xmm(i), ptr[reg_iptr + reg_ioff + (int)(i * prb_.nodes[0].is * sizeof(float))]);
+            for (int i = 0; i < 4; ++i) {
+                Address addr = ptr[reg_iptr + reg_ioff + (int)(i * prb_.nodes[0].is * sizeof(float))];
+                pinsrd(xmm0, addr, i);
+            }
+            movups(ptr[reg_optr + reg_ooff], xmm0);
 
-            for (int i = 0; i < 4; ++i)
-                vmovss(ptr[reg_optr + reg_ooff + (int)(i * prb_.nodes[0].os * sizeof(float))], Xmm(i));
-
-            add(reg_n(0), 4);
-            add(reg_ioff, (int)(4 * prb_.nodes[0].is * sizeof(float)));
-            add(reg_ooff, (int)(4 * prb_.nodes[0].os * sizeof(float)));
+            add(reg_n(0), unroll);
+            add(reg_ioff, (int)(unroll * prb_.nodes[0].is * sizeof(float)));
+            add(reg_ooff, (int)(unroll * prb_.nodes[0].os * sizeof(float)));
             jmp(l_begin[0], T_NEAR);
         }
 
