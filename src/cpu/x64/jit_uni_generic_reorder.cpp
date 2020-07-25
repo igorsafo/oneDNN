@@ -108,10 +108,40 @@ struct jit_generic_kernel_t : public jit_generator {
                 mov(reg_tmp, reg_n(n));
             else
                 mov(reg_tmp, addr_n(n));
-            // mul_by_const(reg_tmp, reg_tmp2, (int)predicate.factors[sib]);
-            imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
+            if (predicate.factors[sib] != 1)
+                imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
             add(reg_acc, reg_tmp);
         }
+        cmp(reg_acc, predicate.restriction);
+        return true;
+    }
+
+    bool evaluate_predicate(int d, const Label &l_unroll) {
+        if (prb_.predicates.count(d) == 0) return false;
+        const auto &predicate = prb_.predicates.at(d);
+
+        auto reg_acc = reg_pred_evaluation;
+
+        // free dimension
+        if (predicate.siblings.size() == 0) {
+            cmp(reg_n(d), predicate.restriction);
+            return true;
+        }
+
+        // connected dimensions
+        xor_(reg_acc, reg_acc);
+        for (size_t sib = 0; sib < predicate.siblings.size(); ++sib) {
+            int n = predicate.siblings[sib];
+            if (n < NREGS_N)
+                mov(reg_tmp, reg_n(n));
+            else
+                mov(reg_tmp, addr_n(n));
+            if (predicate.factors[sib] != 1)
+                imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
+            add(reg_acc, reg_tmp);
+        }
+        cmp(reg_acc, predicate.restriction - 4);
+        jle(l_unroll);
         cmp(reg_acc, predicate.restriction);
         return true;
     }
@@ -126,16 +156,59 @@ struct jit_generic_kernel_t : public jit_generator {
         std::vector<Label> l_begin(prb_.ndims), l_end(prb_.ndims);
 
         assert(prb_.ndims <= NREGS_N);
-        for (int d = prb_.ndims - 1; d >= 0; --d) {
+        for (int d = prb_.ndims - 1; d >= 1; --d) {
             L(l_begin[d]);
-            if (evaluate_predicate(d))
-                jge(l_end[d], T_NEAR);
+            if (evaluate_predicate(d)) jge(l_end[d], T_NEAR);
         }
 
-        vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
-        vmovss(ptr[reg_optr + reg_ooff], xmm0);
 
-        for (int d = 0; d < prb_.ndims; ++d) {
+
+
+        L(l_begin[0]);
+        Label l_unroll;
+        if (evaluate_predicate(0, l_unroll))
+            jge(l_end[0], T_NEAR);
+
+        { // 1
+            vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
+            vmovss(ptr[reg_optr + reg_ooff], xmm0);
+
+            inc(reg_n(0));
+            add(reg_ioff, (int)(prb_.nodes[0].is * sizeof(float)));
+            add(reg_ooff, (int)(prb_.nodes[0].os * sizeof(float)));
+            jmp(l_begin[0], T_NEAR);
+        }
+
+        { // 4
+            L(l_unroll);
+            for (int i = 0; i < 4; ++i)
+                vmovss(Xmm(i), ptr[reg_iptr + reg_ioff + (int)(i * prb_.nodes[0].is * sizeof(float))]);
+
+            for (int i = 0; i < 4; ++i)
+                vmovss(ptr[reg_optr + reg_ooff + (int)(i * prb_.nodes[0].os * sizeof(float))], Xmm(i));
+
+            add(reg_n(0), 4);
+            add(reg_ioff, (int)(4 * prb_.nodes[0].is * sizeof(float)));
+            add(reg_ooff, (int)(4 * prb_.nodes[0].os * sizeof(float)));
+            jmp(l_begin[0], T_NEAR);
+        }
+
+        L(l_end[0]);
+
+        mov(reg_tmp, reg_n(0));
+        imul(reg_tmp, reg_tmp, (int)(prb_.nodes[0].is * sizeof(float)));
+        sub(reg_ioff, reg_tmp);
+
+        mov(reg_tmp, reg_n(0));
+        mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[0].os * sizeof(float)));
+        sub(reg_ooff, reg_tmp);
+
+        xor_(reg_n(0), reg_n(0));
+
+
+
+
+        for (int d = 1; d < prb_.ndims; ++d) {
             inc(reg_n(d));
             add(reg_ioff, (int)(prb_.nodes[d].is * sizeof(float)));
             add(reg_ooff, (int)(prb_.nodes[d].os * sizeof(float)));
@@ -144,7 +217,6 @@ struct jit_generic_kernel_t : public jit_generator {
             L(l_end[d]);
 
             mov(reg_tmp, reg_n(d));
-            // mul_by_const(reg_tmp, reg_tmp2, (int)(prb_.nodes[d].is * sizeof(float)));
             imul(reg_tmp, reg_tmp, (int)(prb_.nodes[d].is * sizeof(float)));
             sub(reg_ioff, reg_tmp);
 
