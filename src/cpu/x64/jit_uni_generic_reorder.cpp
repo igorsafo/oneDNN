@@ -287,67 +287,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
 
             auto prb = tr::prb_t();
 
-            // status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr);
-            // nchw -> nChw16c
-            auto gen_prb_nchw_to_nChw16c = [] (tr::prb_t &prb,
-                    const memory_desc_t *src_md, const memory_desc_t *dst_md) {
-                auto src_d = memory_desc_wrapper(src_md);
-                auto dst_d = memory_desc_wrapper(dst_md);
-                auto &src_bd = src_d.blocking_desc();
-                auto &dst_bd = dst_d.blocking_desc();
-
-                const auto &src_dims = src_md->dims;
-
-                const auto n = src_dims[0];
-                const auto c = src_dims[1];
-                const auto h = src_dims[2];
-                const auto w = src_dims[3];
-
-                bool ok = true
-                    && src_bd.strides[0] >= src_bd.strides[1]
-                    && src_bd.strides[1] >= src_bd.strides[2]
-                    && src_bd.strides[2] >= src_bd.strides[3]
-                    && src_bd.inner_nblks == 0
-                    && dst_bd.strides[0] >= dst_bd.strides[1]
-                    && dst_bd.strides[1] >= dst_bd.strides[2]
-                    && dst_bd.strides[2] >= dst_bd.strides[3]
-                    && dst_bd.inner_nblks == 1;
-                if (!ok) return false;
-
-                prb.itype = src_md->data_type;
-                prb.otype = dst_md->data_type;
-                prb.ndims = 5; // src_md->ndims;
-                prb.ioff = src_d.offset0();
-                prb.ooff = dst_d.offset0();
-
-                prb.scale_type = tr::scale_type_t::NONE;
-                prb.beta = 0.0f;
-
-                {
-                    const auto C = utils::div_up(c, 16);
-
-                    prb.nodes[0] = {(size_t)16, h * w, 1, 0};
-                    prb.nodes[1] = {(size_t)w, 1, 16, 0};
-                    prb.nodes[2] = {(size_t)h, w, w * 16, 0};
-                    prb.nodes[3] = {(size_t)C, 16 * h * w, 16 * h * w, 0};
-                    prb.nodes[4] = {(size_t)n, c * h * w, C * h * w * 16, 0};
-
-                    prb.predicates = {
-                        {0, {{0, 3}, {1, 16}, (size_t)c}},
-                        {1, {{}, {}, (size_t)w}},
-                        {2, {{}, {}, (size_t)h}},
-                        {3, {{0, 3}, {1, 16}, (size_t)c}},
-                        {4, {{}, {}, (size_t)n}},
-                    };
-                }
-
-                return true;
-            };
-
-            if (!gen_prb_nchw_to_nChw16c(prb, src_md, dst_md))
-                return status::unimplemented;
-
-#if 0
+            status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr, true);
             if (prb_init_status != status::success) return prb_init_status;
 
             DEBUG({
@@ -360,15 +300,13 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 printf("norm : ");
                 prb_dump(prb);
             });
+
+#if 0
             /* Combine the variables, which appear together on both
              * sides of the reorder */
             prb_simplify(prb);
             DEBUG({
                 printf("smpl : ");
-                prb_dump(prb);
-            });
-            DEBUG({
-                printf("tile : ");
                 prb_dump(prb);
             });
 #endif

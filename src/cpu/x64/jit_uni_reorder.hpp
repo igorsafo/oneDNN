@@ -63,7 +63,8 @@ struct prb_t {
 };
 
 status_t prb_init(prb_t &prb, const memory_desc_t &imd,
-        const memory_desc_t &omd, const primitive_attr_t *attr);
+        const memory_desc_t &omd, const primitive_attr_t *attr,
+        bool use_predicates = false);
 
 /** sorts the problem nodes so that output strides come in ascending order */
 void prb_normalize(prb_t &p);
