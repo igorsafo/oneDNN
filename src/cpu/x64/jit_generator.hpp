@@ -97,14 +97,21 @@ constexpr Xbyak::Operand::Code abi_save_gpr_regs[] = {
 };
 
 #ifdef _WIN32
-static const Xbyak::Reg64 abi_param1(Xbyak::Operand::RCX),
-        abi_param2(Xbyak::Operand::RDX), abi_param3(Xbyak::Operand::R8),
-        abi_param4(Xbyak::Operand::R9), abi_not_param1(Xbyak::Operand::RDI);
+static const Xbyak::Reg64
+        abi_param1(Xbyak::Operand::RCX),
+        abi_param2(Xbyak::Operand::RDX),
+        abi_param3(Xbyak::Operand::R8),
+        abi_param4(Xbyak::Operand::R9),
+        abi_not_param1(Xbyak::Operand::RDI);
 #else
-static const Xbyak::Reg64 abi_param1(Xbyak::Operand::RDI),
-        abi_param2(Xbyak::Operand::RSI), abi_param3(Xbyak::Operand::RDX),
-        abi_param4(Xbyak::Operand::RCX), abi_param5(Xbyak::Operand::R8),
-        abi_param6(Xbyak::Operand::R9), abi_not_param1(Xbyak::Operand::RCX);
+static const Xbyak::Reg64
+        abi_param1(Xbyak::Operand::RDI),
+        abi_param2(Xbyak::Operand::RSI),
+        abi_param3(Xbyak::Operand::RDX),
+        abi_param4(Xbyak::Operand::RCX),
+        abi_param5(Xbyak::Operand::R8),
+        abi_param6(Xbyak::Operand::R9),
+        abi_not_param1(Xbyak::Operand::RCX);
 #endif
 #endif
 

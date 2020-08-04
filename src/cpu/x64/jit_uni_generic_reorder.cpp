@@ -64,6 +64,12 @@ namespace tr {
 
 // nchw -> nChw16c
 struct jit_generic_kernel_t : public jit_generator {
+    struct call_params_t {
+        const void *in;
+        const void *out;
+        dims_t pos;
+    };
+
     DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_generic_kernel_t)
 
     static bool applicable(const prb_t &p) {
@@ -81,7 +87,7 @@ struct jit_generic_kernel_t : public jit_generator {
     jit_generic_kernel_t(const tr::prb_t &prb)
         : jit_generator(), prb_(prb) {
         generate();
-        ker_ = (void (*)(const void *, void *))getCode();
+        ker_ = (void (*)(const call_params_t *))getCode();
     }
 
     Address addr_n(int d) {
@@ -158,6 +164,11 @@ struct jit_generic_kernel_t : public jit_generator {
     void generate() {
         preamble();
 
+#define PARAM_OFF(x) offsetof(call_params_t, x)
+        mov(reg_iptr, ptr[reg_param + PARAM_OFF(in)]);
+        mov(reg_optr, ptr[reg_param + PARAM_OFF(out)]);
+#undef PARAM_OFF
+
         for (int d = prb_.ndims - 1; d >= 0; --d) xor_(reg_n(d), reg_n(d));
         xor_(reg_ioff, reg_ioff);
         xor_(reg_ooff, reg_ooff);
@@ -169,9 +180,6 @@ struct jit_generic_kernel_t : public jit_generator {
             L(l_begin[d]);
             if (evaluate_predicate(d)) jge(l_end[d], T_NEAR);
         }
-
-
-
 
         L(l_begin[0]);
         int unroll = 4;
@@ -240,14 +248,14 @@ struct jit_generic_kernel_t : public jit_generator {
         postamble();
     }
 
-    void operator()(const void *in, void *out) const {
+    void operator()(call_params_t *args) const {
         // printf("ker:%p\n", ker_);
-        ker_(in, out);
+        ker_(args);
     }
 
 private:
     const prb_t &prb_;
-    void (*ker_)(const void *in, void *out) = nullptr;
+    void (*ker_)(const call_params_t *) = nullptr;
 
     Reg64 reg_tmp = rbx;
     Reg64 reg_tmp2 = r15;
@@ -260,7 +268,8 @@ private:
         return regs[d];
     }
 
-    Reg64 reg_iptr = rdi;
+    Reg64 reg_param = abi_param1;
+    Reg64 reg_iptr = abi_not_param1;
     Reg64 reg_optr = rsi;
 
     Reg64 reg_ioff = r12;
@@ -311,6 +320,15 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             });
 #endif
 
+            int ndims_ker_max{};
+            const auto nthr = dnnl_get_max_threads();
+            prb_thread_kernel_balance(prb, ndims_ker_max, nthr);
+
+            tr::kernel_t::desc_t ker_desc;
+            status_t ker_init_status
+                    = tr::kernel_t::desc_init(ker_desc, prb, ndims_ker_max);
+            if (ker_init_status != status::success) return ker_init_status;
+
             if (!tr::jit_generic_kernel_t::applicable(prb)) {
                 return status::unimplemented;
             }
@@ -334,11 +352,34 @@ struct jit_uni_generic_reorder_t : public primitive_t {
         kernel_ = utils::make_unique<tr::jit_generic_kernel_t>(pd()->prb_);
     }
 
+    void driver_2d(int ithr, int nthr, int off, char *out, const char *in) const {
+        for_nd(ithr, nthr, (ptrdiff_t)ns[1].n, (ptrdiff_t)ns[0].n,
+                [&](ptrdiff_t d1, ptrdiff_t d0) {
+                    tr::jit_generic_kernel_t::call_params_t args;
+                    args.in = in
+                            + (d0 * ns[0].is + d1 * ns[1].is)
+                                    * data_type_size(pd()->prb_.itype);
+                    args.out = out
+                            + (d0 * ns[0].os + d1 * ns[1].os)
+                                    * data_type_size(pd()->prb_.otype);
+
+                    (*kernel_)(&args);
+                });
+    }
+
+    void driver(char *out, const char *in) const {
+        const int ndims_ker = pd()->ker_desc_.prb.ndims;
+
+        parallel(pd()->nthr_, [&](const int ithr, const int nthr) {
+            driver_2d(ithr, nthr, ndims_ker, out, in);
+        });
+    }
+
     status_t execute(const exec_ctx_t &ctx) const override {
         auto in = CTX_IN_MEM(const char *, DNNL_ARG_FROM);
         auto out = CTX_OUT_MEM(char *, DNNL_ARG_TO);
 
-        (*kernel_)(in, out);
+        driver(in, out);
 
         return status::success;
     }
@@ -347,6 +388,11 @@ private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     std::unique_ptr<tr::jit_generic_kernel_t> kernel_;
 };
+
+static void prb_thread_kernel_balance(
+        tr::prb_t &prb, int &ndims_ker_max, int nthr) {
+    ndims_ker_max = 5;
+}
 
 status_t jit_uni_generic_reorder_create(reorder_pd_t **reorder_pd,
         engine_t *engine, const primitive_attr_t *attr, engine_t *src_engine,
