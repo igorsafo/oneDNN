@@ -141,7 +141,7 @@ struct jit_generic_kernel_t : public jit_generator {
             int sib = predicate.siblings.size() - 1 - _sib;
             int n = predicate.siblings[sib];
 
-            if (_sib == 0) {
+            if (0 && _sib == 0) {
                 int x = utils::div_up(predicate.restriction, predicate.factors[sib]) - 1;
                 cmp(reg_n(n), x);
                 jl(l_unroll, T_NEAR);
@@ -155,8 +155,8 @@ struct jit_generic_kernel_t : public jit_generator {
                 imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
             add(reg_acc, reg_tmp);
         }
-        cmp(reg_acc, predicate.restriction - unroll);
-        jle(l_unroll, T_NEAR);
+//        cmp(reg_acc, predicate.restriction - unroll);
+//        jle(l_unroll, T_NEAR);
         cmp(reg_acc, predicate.restriction);
         jge(l_end, T_NEAR);
     }
@@ -330,6 +330,13 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 return status::unimplemented;
             }
 
+                printf("prb\n============\n");
+                prb_dump(prb);
+                printf("============\n");
+                printf("prb_ker\n============\n");
+                prb_dump(prb_ker);
+                printf("============\n");
+
             auto _pd = new pd_t(attr, src_engine->kind(), src_md,
                     dst_engine->kind(), dst_md);
             if (_pd == nullptr) return status::out_of_memory;
@@ -378,7 +385,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
         const auto &par_node_1 = nodes[par_dims[1]];
 
         for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
-                [&](ptrdiff_t d1, ptrdiff_t d0) {
+                [&](ptrdiff_t d0, ptrdiff_t d1) {
                     tr::jit_generic_kernel_t::call_params_t args;
                     args.in = in
                             + (d0 * par_node_0.is + d1 * par_node_1.is)
@@ -400,7 +407,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
 
         for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
                 (ptrdiff_t)par_node_2.n,
-                [&](ptrdiff_t d2, ptrdiff_t d1, ptrdiff_t d0) {
+                [&](ptrdiff_t d0, ptrdiff_t d1, ptrdiff_t d2) {
                     tr::jit_generic_kernel_t::call_params_t args;
                     args.in = in
                             + (d0 * par_node_0.is + d1 * par_node_1.is
@@ -463,12 +470,14 @@ private:
                 printf("par dim: %d\n", d);
             }
         }
+        printf("ndims_par: %d\n", ndims_par);
 
         prb_ker = prb;
         for (int n = 0; n < ndims_par; ++n) {
             int d = par_dims[n];
             for (int dd = d; dd < ndims - n - 1; ++dd)
                 tr::prb_node_swap(prb_ker, dd, dd + 1);
+            prb_ker.predicates.erase(ndims - 1 - n);
         }
         prb_ker.ndims -= ndims_par;
     }
