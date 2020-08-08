@@ -320,14 +320,11 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             });
 #endif
 
-            int ndims_ker_max{};
+            int ndims_par_max = 3;
+            tr::prb_t prb_ker;
+            std::vector<int> par_dims;
             const auto nthr = dnnl_get_max_threads();
-            prb_thread_kernel_balance(prb, ndims_ker_max, nthr);
-
-            tr::kernel_t::desc_t ker_desc;
-            status_t ker_init_status
-                    = tr::kernel_t::desc_init(ker_desc, prb, ndims_ker_max);
-            if (ker_init_status != status::success) return ker_init_status;
+            prb_thread_kernel_balance(prb, ndims_par_max, nthr, prb_ker, par_dims);
 
             if (!tr::jit_generic_kernel_t::applicable(prb)) {
                 return status::unimplemented;
@@ -341,15 +338,18 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 return status::unimplemented;
             }
             _pd->prb_ = prb;
+            _pd->prb_ker_ = prb_ker;
+            _pd->par_dims_ = par_dims;
             _pd->init_scratchpad_md();
             return safe_ptr_assign<reorder_pd_t>(*reorder_pd, _pd);
         }
 
-        tr::prb_t prb_;
+        tr::prb_t prb_, prb_ker_;
+        std::vector<int> par_dims_;
     };
 
     jit_uni_generic_reorder_t(const pd_t *apd) : primitive_t(apd) {
-        kernel_ = utils::make_unique<tr::jit_generic_kernel_t>(pd()->prb_);
+        kernel_ = utils::make_unique<tr::jit_generic_kernel_t>(pd()->prb_ker_);
     }
 
     void driver_2d(int ithr, int nthr, int off, char *out, const char *in) const {
@@ -387,12 +387,29 @@ struct jit_uni_generic_reorder_t : public primitive_t {
 private:
     const pd_t *pd() const { return (const pd_t *)primitive_t::pd().get(); }
     std::unique_ptr<tr::jit_generic_kernel_t> kernel_;
-};
 
-static void prb_thread_kernel_balance(
-        tr::prb_t &prb, int &ndims_ker_max, int nthr) {
-    ndims_ker_max = 5;
-}
+    static void prb_thread_kernel_balance(tr::prb_t &prb, int ndims_par_max,
+            int nthr, tr::prb_t &prb_ker, std::vector<int> &par_dims) {
+        const int ndims = prb.ndims;
+
+        int ndims_par = 0;
+        for (int d = prb.ndims - 1; d >= 0 && ndims_par < ndims_par_max; ++d) {
+            if (prb.predicates[d].siblings.size() == 1) {
+                par_dims.push_back(d);
+                ndims_par++;
+                printf("par dim: %d\n", d);
+            }
+        }
+
+        prb_ker = prb;
+        for (int n = 0; n < ndims_par; ++n) {
+            int d = par_dims[n];
+            for (int dd = d; d < ndims - n - 1; ++dd)
+                tr::prb_node_swap(prb_ker, dd, dd + 1);
+        }
+        prb_ker.ndims -= ndims_par;
+    }
+};
 
 status_t jit_uni_generic_reorder_create(reorder_pd_t **reorder_pd,
         engine_t *engine, const primitive_attr_t *attr, engine_t *src_engine,
