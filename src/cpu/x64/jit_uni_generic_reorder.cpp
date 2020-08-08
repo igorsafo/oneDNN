@@ -352,9 +352,10 @@ struct jit_uni_generic_reorder_t : public primitive_t {
         kernel_ = utils::make_unique<tr::jit_generic_kernel_t>(pd()->prb_ker_);
     }
 
-    void driver_1d(int ithr, int nthr, int off, char *out, const char *in) const {
+    void driver_1d(int ithr, int nthr, char *out, const char *in) const {
+        const auto &nodes = pd()->prb_.nodes;
         const auto &par_dims = pd()->par_dims_;
-        const auto &par_node_0 = ns[par_dims[0]];
+        const auto &par_node_0 = nodes[par_dims[0]];
 
         for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n,
                 [&](ptrdiff_t d0) {
@@ -370,10 +371,11 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 });
     }
 
-    void driver_2d(int ithr, int nthr, int off, char *out, const char *in) const {
+    void driver_2d(int ithr, int nthr, char *out, const char *in) const {
+        const auto &nodes = pd()->prb_.nodes;
         const auto &par_dims = pd()->par_dims_;
-        const auto &par_node_0 = ns[par_dims[0]];
-        const auto &par_node_1 = ns[par_dims[1]];
+        const auto &par_node_0 = nodes[par_dims[0]];
+        const auto &par_node_1 = nodes[par_dims[1]];
 
         for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
                 [&](ptrdiff_t d1, ptrdiff_t d0) {
@@ -389,11 +391,12 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 });
     }
 
-    void driver_3d(int ithr, int nthr, int off, char *out, const char *in) const {
+    void driver_3d(int ithr, int nthr, char *out, const char *in) const {
+        const auto &nodes = pd()->prb_.nodes;
         const auto &par_dims = pd()->par_dims_;
-        const auto &par_node_0 = ns[par_dims[0]];
-        const auto &par_node_1 = ns[par_dims[1]];
-        const auto &par_node_2 = ns[par_dims[2]];
+        const auto &par_node_0 = nodes[par_dims[0]];
+        const auto &par_node_1 = nodes[par_dims[1]];
+        const auto &par_node_2 = nodes[par_dims[2]];
 
         for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
                 (ptrdiff_t)par_node_2.n,
@@ -413,18 +416,31 @@ struct jit_uni_generic_reorder_t : public primitive_t {
     }
 
     void driver(char *out, const char *in) const {
-        const int ndims_ker = pd()->ker_desc_.prb.ndims;
-
-        parallel(pd()->nthr_, [&](const int ithr, const int nthr) {
-            driver_2d(ithr, nthr, ndims_ker, out, in);
-        });
+        switch (pd()->par_dims_.size()) {
+        case 1:
+            parallel(0, [&](const int ithr, const int nthr) {
+                driver_1d(ithr, nthr, out, in);
+            });
+            break;
+        case 2:
+            parallel(0, [&](const int ithr, const int nthr) {
+                driver_2d(ithr, nthr, out, in);
+            });
+            break;
+        case 3:
+            parallel(0, [&](const int ithr, const int nthr) {
+                driver_3d(ithr, nthr, out, in);
+            });
+        break;
+            default: assert(!"number of dims is not supported"); return;
+        }
     }
 
     status_t execute(const exec_ctx_t &ctx) const override {
         auto in = CTX_IN_MEM(const char *, DNNL_ARG_FROM);
         auto out = CTX_OUT_MEM(char *, DNNL_ARG_TO);
 
-        driver(in, out);
+        driver(out, in);
 
         return status::success;
     }
