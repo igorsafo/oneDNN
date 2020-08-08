@@ -326,7 +326,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             const auto nthr = dnnl_get_max_threads();
             prb_thread_kernel_balance(prb, ndims_par_max, nthr, prb_ker, par_dims);
 
-            if (!tr::jit_generic_kernel_t::applicable(prb)) {
+            if (!tr::jit_generic_kernel_t::applicable(prb_ker)) {
                 return status::unimplemented;
             }
 
@@ -431,8 +431,10 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             parallel(0, [&](const int ithr, const int nthr) {
                 driver_3d(ithr, nthr, out, in);
             });
-        break;
-            default: assert(!"number of dims is not supported"); return;
+            break;
+        default:
+            printf("size:%d\n", (int)pd()->par_dims_.size());
+            assert(!"number of dims is not supported"); return;
         }
     }
 
@@ -454,8 +456,8 @@ private:
         const int ndims = prb.ndims;
 
         int ndims_par = 0;
-        for (int d = prb.ndims - 1; d >= 0 && ndims_par < ndims_par_max; ++d) {
-            if (prb.predicates[d].siblings.size() == 1) {
+        for (int d = prb.ndims - 1; d >= 0 && ndims_par < ndims_par_max; --d) {
+            if (prb.predicates[d].siblings.size() <= 1) {
                 par_dims.push_back(d);
                 ndims_par++;
                 printf("par dim: %d\n", d);
@@ -465,7 +467,7 @@ private:
         prb_ker = prb;
         for (int n = 0; n < ndims_par; ++n) {
             int d = par_dims[n];
-            for (int dd = d; d < ndims - n - 1; ++dd)
+            for (int dd = d; dd < ndims - n - 1; ++dd)
                 tr::prb_node_swap(prb_ker, dd, dd + 1);
         }
         prb_ker.ndims -= ndims_par;
