@@ -141,7 +141,7 @@ struct jit_generic_kernel_t : public jit_generator {
             int sib = predicate.siblings.size() - 1 - _sib;
             int n = predicate.siblings[sib];
 
-            if (0 && _sib == 0) {
+            if (_sib == 0) {
                 int x = utils::div_up(predicate.restriction, predicate.factors[sib]) - 1;
                 cmp(reg_n(n), x);
                 jl(l_unroll, T_NEAR);
@@ -155,8 +155,8 @@ struct jit_generic_kernel_t : public jit_generator {
                 imul(reg_tmp, reg_tmp, (int)predicate.factors[sib]);
             add(reg_acc, reg_tmp);
         }
-//        cmp(reg_acc, predicate.restriction - unroll);
-//        jle(l_unroll, T_NEAR);
+        cmp(reg_acc, predicate.restriction - unroll);
+        jle(l_unroll, T_NEAR);
         cmp(reg_acc, predicate.restriction);
         jge(l_end, T_NEAR);
     }
@@ -202,7 +202,14 @@ struct jit_generic_kernel_t : public jit_generator {
                 Address addr = ptr[reg_iptr + reg_ioff + (int)(i * prb_.nodes[0].is * sizeof(float))];
                 pinsrd(xmm0, addr, i);
             }
-            movups(ptr[reg_optr + reg_ooff], xmm0);
+            if (prb_.nodes[0].os == 1) {
+                movups(ptr[reg_optr + reg_ooff], xmm0);
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    Address addr = ptr[reg_optr + reg_ooff + (int)(i * prb_.nodes[0].os * sizeof(float))];
+                    pextrd(addr, xmm0, i);
+                }
+            }
 
             add(reg_n(0), unroll);
             add(reg_ioff, (int)(unroll * prb_.nodes[0].is * sizeof(float)));
@@ -330,13 +337,6 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 return status::unimplemented;
             }
 
-                printf("prb\n============\n");
-                prb_dump(prb);
-                printf("============\n");
-                printf("prb_ker\n============\n");
-                prb_dump(prb_ker);
-                printf("============\n");
-
             auto _pd = new pd_t(attr, src_engine->kind(), src_md,
                     dst_engine->kind(), dst_md);
             if (_pd == nullptr) return status::out_of_memory;
@@ -440,7 +440,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             });
             break;
         default:
-            printf("size:%d\n", (int)pd()->par_dims_.size());
+            // printf("size:%d\n", (int)pd()->par_dims_.size());
             assert(!"number of dims is not supported"); return;
         }
     }
@@ -467,10 +467,10 @@ private:
             if (prb.predicates[d].siblings.size() <= 1) {
                 par_dims.push_back(d);
                 ndims_par++;
-                printf("par dim: %d\n", d);
+                // printf("par dim: %d\n", d);
             }
         }
-        printf("ndims_par: %d\n", ndims_par);
+        // printf("ndims_par: %d\n", ndims_par);
 
         prb_ker = prb;
         for (int n = 0; n < ndims_par; ++n) {
