@@ -352,15 +352,60 @@ struct jit_uni_generic_reorder_t : public primitive_t {
         kernel_ = utils::make_unique<tr::jit_generic_kernel_t>(pd()->prb_ker_);
     }
 
+    void driver_1d(int ithr, int nthr, int off, char *out, const char *in) const {
+        const auto &par_dims = pd()->par_dims_;
+        const auto &par_node_0 = ns[par_dims[0]];
+
+        for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n,
+                [&](ptrdiff_t d0) {
+                    tr::jit_generic_kernel_t::call_params_t args;
+                    args.in = in
+                            + d0 * par_node_0.is
+                                    * data_type_size(pd()->prb_.itype);
+                    args.out = out
+                            + d0 * par_node_0.os
+                                    * data_type_size(pd()->prb_.otype);
+
+                    (*kernel_)(&args);
+                });
+    }
+
     void driver_2d(int ithr, int nthr, int off, char *out, const char *in) const {
-        for_nd(ithr, nthr, (ptrdiff_t)ns[1].n, (ptrdiff_t)ns[0].n,
+        const auto &par_dims = pd()->par_dims_;
+        const auto &par_node_0 = ns[par_dims[0]];
+        const auto &par_node_1 = ns[par_dims[1]];
+
+        for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
                 [&](ptrdiff_t d1, ptrdiff_t d0) {
                     tr::jit_generic_kernel_t::call_params_t args;
                     args.in = in
-                            + (d0 * ns[0].is + d1 * ns[1].is)
+                            + (d0 * par_node_0.is + d1 * par_node_1.is)
                                     * data_type_size(pd()->prb_.itype);
                     args.out = out
-                            + (d0 * ns[0].os + d1 * ns[1].os)
+                            + (d0 * par_node_0.os + d1 * par_node_1.os)
+                                    * data_type_size(pd()->prb_.otype);
+
+                    (*kernel_)(&args);
+                });
+    }
+
+    void driver_3d(int ithr, int nthr, int off, char *out, const char *in) const {
+        const auto &par_dims = pd()->par_dims_;
+        const auto &par_node_0 = ns[par_dims[0]];
+        const auto &par_node_1 = ns[par_dims[1]];
+        const auto &par_node_2 = ns[par_dims[2]];
+
+        for_nd(ithr, nthr, (ptrdiff_t)par_node_0.n, (ptrdiff_t)par_node_1.n,
+                (ptrdiff_t)par_node_2.n,
+                [&](ptrdiff_t d2, ptrdiff_t d1, ptrdiff_t d0) {
+                    tr::jit_generic_kernel_t::call_params_t args;
+                    args.in = in
+                            + (d0 * par_node_0.is + d1 * par_node_1.is
+                                + d2 * par_node_2.is)
+                                    * data_type_size(pd()->prb_.itype);
+                    args.out = out
+                            + (d0 * par_node_0.os + d1 * par_node_1.os
+                                + d2 * par_node_2.os)
                                     * data_type_size(pd()->prb_.otype);
 
                     (*kernel_)(&args);
