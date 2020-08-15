@@ -15,6 +15,7 @@
 *******************************************************************************/
 
 #include <assert.h>
+#include <algorithm>
 
 #include "common/c_types_map.hpp"
 #include "common/dnnl_thread.hpp"
@@ -263,6 +264,10 @@ status_t prb_init(prb_t &p, const memory_desc_t &imd_,
     return success;
 }
 
+static bool prb_check_free_dim(const prb_t &p, int dim) {
+    return p.predicates.empty() || p.predicates.at(dim).siblings.size() == 0;
+}
+
 void prb_normalize(prb_t &p) {
     for (int d = 0; d < p.ndims; ++d) {
         int min_pos = d;
@@ -284,6 +289,9 @@ void prb_simplify(prb_t &p) {
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
     for (int d = 0; d < p.ndims - 1; ++d) {
+        if (!prb_check_free_dim(p, d) || !prb_check_free_dim(p, d + 1))
+            continue;
+
         auto &this_node = p.nodes[d + 0];
         auto &next_node = p.nodes[d + 1];
         const bool fold = false
@@ -311,17 +319,48 @@ void prb_node_split(prb_t &p, int dim, size_t n1) {
     assert(p.ndims < max_ndims);
     assert(p.nodes[dim].n % n1 == 0);
 
+    // two step implementation: add split dim to the end, and then move
+    // TODO: optimize
+
     p.ndims += 1;
 
-    for (int d = p.ndims; d > dim + 1; --d)
-        p.nodes[d] = p.nodes[d - 1];
+    // step 1: split dim into (dim) and (ndims-1)
 
-    p.nodes[dim + 1].n = p.nodes[dim].n / n1;
-    p.nodes[dim + 1].is = p.nodes[dim].is * n1;
-    p.nodes[dim + 1].os = p.nodes[dim].os * n1;
-    p.nodes[dim + 1].ss = p.nodes[dim].ss * n1;
+    p.nodes[p.ndims - 1].n = p.nodes[dim].n / n1;
+    p.nodes[p.ndims - 1].is = p.nodes[dim].is * n1;
+    p.nodes[p.ndims - 1].os = p.nodes[dim].os * n1;
+    p.nodes[p.ndims - 1].ss = p.nodes[dim].ss * n1;
 
     p.nodes[dim].n = n1;
+
+    if (prb_check_free_dim(p, dim)) {
+        if (!p.predicates.empty()) {
+            // simple case: independent dim
+            p.predicates[dim - 1].restriction = p.nodes[dim].n;
+            p.predicates[p.ndims - 1] = {{}, {}, p.nodes[p.ndims - 1].n};
+        }
+    } else {
+        std::vector<int> &siblings = p.predicates[dim].siblings;
+        std::vector<int> &factors = p.predicates[dim].factors;
+
+        size_t sib_dim = 0;
+        for (; sib_dim < siblings.size(); ++sib_dim)
+            if (siblings[sib_dim] == dim) break;
+
+        siblings.push_back(p.ndims - 1);
+        factors.push_back(factors[sib_dim] * p.nodes[dim].n);
+
+        for (int sib: siblings) {
+            if (sib == dim || sib == p.ndims - 1) continue;
+            p.predicates[sib].factors = factors;
+            p.predicates[sib].siblings = siblings;
+        }
+        p.predicates[p.ndims - 1] = {siblings, factors, p.predicates[dim].restriction};
+    }
+
+    // step 2: mov (ndims-1) to (dim+1) position
+    for (int d = p.ndims - 1; d > dim + 2; --d)
+        prb_node_swap(p, d, d - 1);
 }
 
 void prb_node_swap(prb_t &p, int d0, int d1) {
@@ -355,6 +394,8 @@ void prb_node_move(prb_t &p, int d0, int d1) {
 
     if (d0 == d1) return;
 
+    // TODO: enable faster version
+#if 0
     node_t node = p.nodes[d0];
 
     if (d0 < d1)
@@ -365,6 +406,11 @@ void prb_node_move(prb_t &p, int d0, int d1) {
             p.nodes[d] = p.nodes[d - 1];
 
     p.nodes[d1] = node;
+#else
+    int step = d0 < d1 ? +1 : -1;
+    for (int d = d0; d != d1; d += step)
+        prb_node_swap(p, d, d + step);
+#endif
 }
 
 void prb_dump(const prb_t &p) {

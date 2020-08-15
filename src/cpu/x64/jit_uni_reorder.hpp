@@ -44,8 +44,8 @@ enum class scale_type_t { NONE, COMMON, MANY };
 
 // sum{i}(siblings[i] * factors[i]) < restriction
 struct pred_t {
-    std::vector<int> siblings;
-    std::vector<int> factors;
+    std::vector<int> siblings; // empty if independent dim
+    std::vector<int> factors;  // empty if independent dim
     size_t restriction;
 };
 

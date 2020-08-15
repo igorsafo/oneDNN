@@ -33,7 +33,7 @@
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 
-// #define TR_DEBUG
+#define TR_DEBUG
 #if defined(TR_DEBUG)
 #define DEBUg(...) \
     do { \
@@ -317,7 +317,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 prb_dump(prb);
             });
 
-#if 0
+#if 1
             /* Combine the variables, which appear together on both
              * sides of the reorder */
             prb_simplify(prb);
