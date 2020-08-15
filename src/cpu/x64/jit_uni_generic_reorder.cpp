@@ -33,7 +33,7 @@
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 
-#define TR_DEBUG
+//#define TR_DEBUG
 #if defined(TR_DEBUG)
 #define DEBUg(...) \
     do { \
@@ -94,17 +94,18 @@ struct jit_generic_kernel_t : public jit_generator {
         return ptr[reg_iptr]; // FIXME
     }
 
-    bool evaluate_predicate(int d) {
-        if (prb_.predicates.count(d) == 0) return false;
+    void evaluate_predicate(int d, const Label &l_end) {
+        if (prb_.predicates.count(d) == 0) return;
         const auto &predicate = prb_.predicates.at(d);
 
         auto reg_acc = reg_pred_evaluation;
 
+        cmp(reg_n(d), prb_.nodes[d].n);
+        jge(l_end, T_NEAR);
+
         // free dimension
-        if (predicate.siblings.size() == 0) {
-            cmp(reg_n(d), predicate.restriction);
-            return true;
-        }
+        if (predicate.siblings.size() == 0)
+            return;
 
         // connected dimensions
         xor_(reg_acc, reg_acc);
@@ -119,7 +120,7 @@ struct jit_generic_kernel_t : public jit_generator {
             add(reg_acc, reg_tmp);
         }
         cmp(reg_acc, predicate.restriction);
-        return true;
+        jge(l_end, T_NEAR);
     }
 
     void maybe_evaluate_predicate(int d, int unroll, const Label &l_unroll, const Label &l_end) {
@@ -178,7 +179,7 @@ struct jit_generic_kernel_t : public jit_generator {
         assert(prb_.ndims <= NREGS_N);
         for (int d = prb_.ndims - 1; d >= 1; --d) {
             L(l_begin[d]);
-            if (evaluate_predicate(d)) jge(l_end[d], T_NEAR);
+            evaluate_predicate(d, l_end[d]);
         }
 
         L(l_begin[0]);
@@ -317,7 +318,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 prb_dump(prb);
             });
 
-#if 1
+#if 0
             /* Combine the variables, which appear together on both
              * sides of the reorder */
             prb_simplify(prb);
