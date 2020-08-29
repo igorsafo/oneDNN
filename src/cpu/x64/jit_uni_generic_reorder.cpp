@@ -44,14 +44,6 @@
 #endif
 #define DEBUG(...) DEBUg(__VA_ARGS__)
 
-#ifdef _WIN32
-/* seems like s_addr is a reserved macro on Windows */
-#undef s_addr
-constexpr static bool is_windows = true;
-#else
-constexpr static bool is_windows = false;
-#endif
-
 using namespace Xbyak;
 using namespace dnnl::impl::types;
 
@@ -162,7 +154,7 @@ struct jit_generic_kernel_t : public jit_generator {
         jge(l_end, T_NEAR);
     }
 
-    void generate() {
+    void generate() override {
         preamble();
 
 #define PARAM_OFF(x) offsetof(call_params_t, x)
