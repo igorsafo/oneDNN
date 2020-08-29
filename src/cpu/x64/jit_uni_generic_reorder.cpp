@@ -33,10 +33,10 @@
 #include "cpu/x64/jit_avx512_core_bf16cvt.hpp"
 #include "cpu/x64/jit_generator.hpp"
 
-//#define TR_DEBUG
+#define TR_DEBUG
 #if defined(TR_DEBUG)
 #define DEBUg(...) \
-    do { \
+    if (debug) do { \
         __VA_ARGS__ \
     } while (0)
 #else
@@ -121,12 +121,18 @@ struct jit_generic_kernel_t : public jit_generator {
 
         auto reg_acc = reg_pred_evaluation;
 
+
+        // free dimension
+        if (predicate.siblings.size() == 0) {
+            cmp(reg_n(d), prb_.nodes[d].n - unroll);
+            jle(l_unroll, T_NEAR);
+        }
+
         cmp(reg_n(d), prb_.nodes[d].n);
         jge(l_end, T_NEAR);
 
         // free dimension
-        if (predicate.siblings.size() == 0)
-            return;
+        if (predicate.siblings.size() == 0) return;
 
         // connected dimensions
         xor_(reg_acc, reg_acc);
@@ -180,8 +186,8 @@ struct jit_generic_kernel_t : public jit_generator {
         maybe_evaluate_predicate(0, unroll, l_unroll, l_end[0]);
 
         { // 1
-            vmovss(xmm0, ptr[reg_iptr + reg_ioff]);
-            vmovss(ptr[reg_optr + reg_ooff], xmm0);
+            movss(xmm0, ptr[reg_iptr + reg_ioff]);
+            movss(ptr[reg_optr + reg_ooff], xmm0);
 
             inc(reg_n(0));
             add(reg_ioff, (int)(prb_.nodes[0].is * sizeof(float)));
@@ -294,6 +300,12 @@ struct jit_uni_generic_reorder_t : public primitive_t {
             }
             if (!enable) return status::unimplemented;
 
+            int debug = -1;
+            if (debug == -1) {
+                const char *env = ::getenv("DBG");
+                debug = env && *env == '1';
+            }
+
             auto prb = tr::prb_t();
 
             status_t prb_init_status = prb_init(prb, *src_md, *dst_md, attr, true);
@@ -310,7 +322,7 @@ struct jit_uni_generic_reorder_t : public primitive_t {
                 prb_dump(prb);
             });
 
-#if 0
+#if 1
             /* Combine the variables, which appear together on both
              * sides of the reorder */
             prb_simplify(prb);
@@ -455,15 +467,17 @@ private:
             int nthr, tr::prb_t &prb_ker, std::vector<int> &par_dims) {
         const int ndims = prb.ndims;
 
+        dim_t par_size = 1;
+
         int ndims_par = 0;
         for (int d = prb.ndims - 1; d >= 0 && ndims_par < ndims_par_max; --d) {
             if (prb.predicates[d].siblings.size() <= 1) {
+                par_size *= prb.nodes[d].n;
                 par_dims.push_back(d);
                 ndims_par++;
-                // printf("par dim: %d\n", d);
             }
+            if (par_size >= 32) break;
         }
-        // printf("ndims_par: %d\n", ndims_par);
 
         prb_ker = prb;
         for (int n = 0; n < ndims_par; ++n) {

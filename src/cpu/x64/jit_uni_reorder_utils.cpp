@@ -303,9 +303,14 @@ void prb_simplify(prb_t &p) {
                                 == (ptrdiff_t)this_node.n * this_node.ss);
         if (fold) {
             this_node.n *= next_node.n;
+            p.predicates[d + 0].restriction *= p.predicates[d + 1].restriction;
             for (int j = d + 2; j < p.ndims; ++j)
-                p.nodes[j - 1] = p.nodes[j];
+                prb_node_swap(p, j - 1, j); // p.nodes[j - 1] = p.nodes[j];
             --p.ndims;
+            {
+                auto it = p.predicates.find(p.ndims);
+                if (it != p.predicates.end()) p.predicates.erase(it);
+            }
             --d; // make another try
         }
     }
