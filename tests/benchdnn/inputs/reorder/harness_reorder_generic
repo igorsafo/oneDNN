@@ -1,0 +1,8 @@
+--reset
+
+--sdt=f32 --ddt=f32
+--stag=nchw,nhwc --dtag=nChw16c --batch=shapes_generic_reorder
+--stag=nChw16c --dtag=nchw,nhwc --batch=shapes_generic_reorder
+
+--stag=oihw --dtag=Oihw16o,OIhw16o16i,OIhw4i16o4i --batch=shapes_generic_reorder
+--stag=Oihw16o,OIhw16o16i,OIhw4i16o4i --dtag=oihw --batch=shapes_generic_reorder
