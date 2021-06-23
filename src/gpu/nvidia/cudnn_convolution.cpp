@@ -1,5 +1,5 @@
 /*******************************************************************************
-* Copyright 2020 Intel Corporation
+* Copyright 2020-2021 Intel Corporation
 * Copyright 2020 Codeplay Software Limited
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,7 +65,7 @@ status_t cudnn_convolution_fwd_t::execute_convolution(
                             memory_tracking::names::key_conv_cudnn_filter));
         }
 
-        if (pd()->use_temp_dst_) {
+        if (pd()->use_temp_dst()) {
             temp_dst_acc = std::make_shared<scratch_acc_t>(
                     buffer(scratch_storage.get())
                             .get_access<cl::sycl::access::mode::read_write>(
@@ -93,10 +93,10 @@ status_t cudnn_convolution_fwd_t::execute_convolution(
             args.push_back(pd()->impl_->using_transformed_filter()
                             ? sc.memory<void *>(ih, *filter_scratch_acc)
                             : nullptr);
-            args.push_back(pd()->use_temp_dst_
+            args.push_back(pd()->use_temp_dst()
                             ? sc.memory<void *>(ih, *temp_dst_acc)
                             : nullptr);
-            args.push_back(pd()->use_temp_dst_
+            args.push_back(pd()->use_temp_dst()
                             ? sc.memory<void *>(ih, *temp_reorder_acc)
                             : nullptr);
             pd()->impl_->execute(handle, args);

@@ -372,6 +372,8 @@ protected:
     bool need_reorder = false;
     bool use_temp_dst = false;
     float sum_scale = 1.0f;
+    bool conv_eltwise_bias = false;
+    bool conv_bias = false;
 
 public:
     virtual ~cudnn_convolution_impl_fwd_t() {
@@ -389,21 +391,37 @@ public:
     status_t configure_post_ops(convolution_pd_t *pd) {
         auto &p = pd->attr()->post_ops_;
         num_post_ops = p.len();
-        if (data_types[y] == CUDNN_DATA_INT8 && p.len() > 0) {
-            data_types[y] = CUDNN_DATA_FLOAT;
-            need_reorder = true;
-        }
         for (size_t i = 0; i < p.len(); i++) {
             post_ops[i] = p.entry_[i].kind;
             if (post_ops[i] == dnnl_eltwise) {
-                create_and_set_eltwise_descriptor(pd);
+                CHECK(create_and_set_eltwise_descriptor(pd));
             }
             if (post_ops[i] == dnnl_sum) { sum_scale = p.entry_[i].sum.scale; }
         }
 
-        if (need_reorder)
+        // Try to fuse kernels
+        // pattern 1: conv + eltwise + bias
+        conv_eltwise_bias = num_post_ops > 0 && post_ops[0] == dnnl_eltwise
+                && with_bias
+                && !do_scaling
+                // XXX: cuDNN has a correctness issue for fusion of group conv
+                && pd->G() == 1;
+        // pattern 2: conv + bias
+        conv_bias = with_bias && !conv_eltwise_bias
+                && !do_scaling
+                // cuDNN limitation on algorithm support when activation is equal to
+                // CUDNN_ACTIVATION_IDENTITY.
+                && fwd_alg_kind
+                        == CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+        // If the only post-op is fused then there is no need for temp dst
+        if (conv_eltwise_bias && num_post_ops == 1) use_temp_dst = false;
+
+        if (data_types[y] == CUDNN_DATA_INT8 && use_temp_dst) {
+            data_types[y] = CUDNN_DATA_FLOAT;
+            need_reorder = true;
             CHECK(create_and_set_tensor_descriptor_ex(&reorder_dst_desc,
                     formats[y], reorder_type, ndims[y], dims[y]));
+        }
 
         return status::success;
     }
@@ -412,13 +430,15 @@ public:
             bool use_scratch_dst) override {
         use_temp_dst = use_scratch_dst;
         CHECK(configure_parameters(pd, use_temp_dst));
-        CHECK(configure_post_ops(pd));
         CHECK(create_cudnn_descs(pd));
         CHECK(configure_alg_kind(engine, pd));
+        CHECK(configure_post_ops(pd));
         CHECK(init_scratchpad(engine, pd));
 
         return status::success;
     }
+
+    bool use_temp_dst() const { return use_temp_dst; }
 
     void execute_reorder(cudnnHandle_t handle, void *src, void *dst,
             bool flip_formats) const {
@@ -451,12 +471,13 @@ public:
             transform_filter(handle, weights, w_scratch);
             weights = w_scratch;
         }
-        if (computation_data_type == CUDNN_DATA_INT32 && bias) {
+        if (conv_bias || conv_eltwise_bias) {
             CUDNN_EXECUTE_FUNC_V(cudnnConvolutionBiasActivationForward, handle,
                     &alpha, descs[io::x], x, weights_desc, weights, conv_desc,
                     fwd_alg_kind, scratchpad, scratchpad_size, &beta,
                     descs[io::y], output, descs[io::bias], bias,
-                    activation_desc, descs[io::y], output);
+                    conv_eltwise_bias ? eltwise_desc : activation_desc,
+                    descs[io::y], output);
         } else {
             const float bias_alpha = 1.0f;
             const float bias_beta = 1.0f;
@@ -471,7 +492,9 @@ public:
             }
         }
         execute_scale(handle, output);
-        for (int i = 0; i < num_post_ops; i++) {
+        // skip first eltwise in case it is fused into convolution
+        const int post_ops_start_pos = conv_eltwise_bias ? 1 : 0;
+        for (int i = post_ops_start_pos; i < num_post_ops; i++) {
             bool last_op = i == num_post_ops - 1 && !need_reorder;
             if (last_op) output = y;
             switch (post_ops[i]) {
@@ -588,14 +611,12 @@ public:
 
         if (submit_status != CUDNN_STATUS_SUCCESS) return status::unimplemented;
 
-        if (fwd_alg_kind == CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM) {
-            CHECK(CUDNN_EXECUTE_FUNC_S(
-                    cudnnCreateActivationDescriptor, &activation_desc));
-            CHECK(CUDNN_EXECUTE_FUNC_S(cudnnSetActivationDescriptor,
-                    activation_desc,
-                    cudnnActivationMode_t::CUDNN_ACTIVATION_IDENTITY,
-                    CUDNN_NOT_PROPAGATE_NAN, 1.0));
-        }
+        CHECK(CUDNN_EXECUTE_FUNC_S(
+                cudnnCreateActivationDescriptor, &activation_desc));
+        CHECK(CUDNN_EXECUTE_FUNC_S(cudnnSetActivationDescriptor,
+                activation_desc,
+                cudnnActivationMode_t::CUDNN_ACTIVATION_IDENTITY,
+                CUDNN_NOT_PROPAGATE_NAN, 1.0));
 
         return status::success;
     }
