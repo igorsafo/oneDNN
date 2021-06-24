@@ -92,7 +92,7 @@ public:
 
     virtual status_t init(engine_t *engine, convolution_pd_t *pd,
             bool use_scratch_dst = false) {
-        CHECK(configure_parameters(pd, use_scratch_dst));
+        CHECK(configure_parameters(pd));
         CHECK(create_cudnn_descs(pd));
         CHECK(check_output_dims());
         CHECK(configure_alg_kind(engine, pd));
@@ -121,8 +121,7 @@ public:
                     strides[io], dnnl_descs[io].ndims, ndims[io]);
         }
     }
-    status_t configure_parameters(
-            const convolution_pd_t *pd, bool use_scratch_dst) {
+    status_t configure_parameters(const convolution_pd_t *pd) {
         if (pd->ndims() > CUDNN_DIM_MAX) { return status::invalid_arguments; }
         CHECK(set_padding_and_dilation(pd));
         with_groups = pd->with_groups();
@@ -429,7 +428,7 @@ public:
     status_t init(engine_t *engine, convolution_pd_t *pd,
             bool use_scratch_dst) override {
         use_temp_dst = use_scratch_dst;
-        CHECK(configure_parameters(pd, use_temp_dst));
+        CHECK(configure_parameters(pd));
         CHECK(create_cudnn_descs(pd));
         CHECK(configure_alg_kind(engine, pd));
         CHECK(configure_post_ops(pd));
