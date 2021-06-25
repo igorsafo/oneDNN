@@ -60,6 +60,7 @@ protected:
 
     bool do_scaling = false;
     float output_scaling = 1.0f;
+    bool use_temp_dst_ = false;
     cudnnDataType_t computation_data_type = CUDNN_DATA_FLOAT;
     cudnnDataType_t reorder_type = CUDNN_DATA_INT8;
 
@@ -355,6 +356,8 @@ public:
                     filter_ndims, transform_filter_strides, filter_dims);
         }
     }
+
+    bool use_temp_dst() const { return use_temp_dst_; }
 };
 
 struct cudnn_convolution_impl_fwd_t : public cudnn_convolution_impl_base_t {
@@ -369,7 +372,6 @@ protected:
     int num_post_ops = 0;
     primitive_kind_t post_ops[2];
     bool need_reorder = false;
-    bool use_temp_dst = false;
     float sum_scale = 1.0f;
     bool conv_eltwise_bias = false;
     bool conv_bias = false;
@@ -413,9 +415,9 @@ public:
                 && fwd_alg_kind
                         == CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
         // If the only post-op is fused then there is no need for temp dst
-        if (conv_eltwise_bias && num_post_ops == 1) use_temp_dst = false;
+        if (conv_eltwise_bias && num_post_ops == 1) use_temp_dst_ = false;
 
-        if (data_types[y] == CUDNN_DATA_INT8 && use_temp_dst) {
+        if (data_types[y] == CUDNN_DATA_INT8 && use_temp_dst_) {
             data_types[y] = CUDNN_DATA_FLOAT;
             need_reorder = true;
             CHECK(create_and_set_tensor_descriptor_ex(&reorder_dst_desc,
@@ -427,7 +429,7 @@ public:
 
     status_t init(engine_t *engine, convolution_pd_t *pd,
             bool use_scratch_dst) override {
-        use_temp_dst = use_scratch_dst;
+        use_temp_dst_ = use_scratch_dst;
         CHECK(configure_parameters(pd));
         CHECK(create_cudnn_descs(pd));
         CHECK(configure_alg_kind(engine, pd));
@@ -436,8 +438,6 @@ public:
 
         return status::success;
     }
-
-    bool use_temp_dst() const { return use_temp_dst; }
 
     void execute_reorder(cudnnHandle_t handle, void *src, void *dst,
             bool flip_formats) const {
@@ -464,7 +464,7 @@ public:
         auto x = args[0], weights = args[1], y = args[2], bias = args[3],
              scratchpad = args[4], post_op_scratch = args[6],
              post_op_reorder = args[7];
-        void *output = use_temp_dst ? post_op_scratch : y;
+        void *output = use_temp_dst_ ? post_op_scratch : y;
         if (using_transformed_filter()) {
             auto w_scratch = args[5];
             transform_filter(handle, weights, w_scratch);

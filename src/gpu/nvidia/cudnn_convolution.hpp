@@ -98,7 +98,7 @@ struct cudnn_convolution_fwd_t : public primitive_t {
         memory_desc_t dst_md_temp_;
 
         bool use_temp_dst() const {
-            if (impl.get()) return impl->use_temp_dst();
+            if (impl_.get()) return impl_->use_temp_dst();
             return false;
         }
 
@@ -171,7 +171,7 @@ struct cudnn_convolution_fwd_t : public primitive_t {
     }
 
     virtual status_t init(engine_t *engine) override {
-        if (pd()->impl() _->use_temp_dst()) { init_temp_dst(engine); }
+        if (pd()->use_temp_dst()) { init_temp_dst(engine); }
         return status::success;
     }
 
