@@ -256,6 +256,13 @@ int fill_memory(const prb_t &prb, rnn_data_kind_t kind, dnn_mem_t &mem_dt,
             mem_fp.set_elem(idx, val);
         }
     };
+    auto zero_chunk = [&](int idx_chunk) {
+        int64_t idx_start = idx_chunk * chunk_size;
+        int64_t idx_end = MIN2(idx_start + chunk_size, nelems);
+        for (int64_t idx = idx_start; idx < idx_end; ++idx) {
+            mem_fp.set_elem(idx, 0.0f);
+        }
+    };
     switch (kind) {
         case WEIGHTS_PROJECTION:
             benchdnn_parallel_nd(n_chunks, [&](int64_t idx) {
@@ -270,10 +277,14 @@ int fill_memory(const prb_t &prb, rnn_data_kind_t kind, dnn_mem_t &mem_dt,
             });
             break;
         case SRC_LAYER:
-        case SRC_ITER:
             benchdnn_parallel_nd(n_chunks, [&](int64_t idx) {
                 fill_chunk(&(prb.data_scale), 1, prb.data_shift, idx);
             });
+            break;
+        case SRC_ITER:
+        case DIFF_DST_ITER:
+            benchdnn_parallel_nd(
+                    n_chunks, [&](int64_t idx) { zero_chunk(idx); });
             break;
         default: // we do no scale/shift
             benchdnn_parallel_nd(n_chunks, [&](int64_t idx) {
@@ -617,9 +628,9 @@ dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args) {
     // When training, we use forward_training
     if (dir & FLAG_FWD) {
         DNN_SAFE_STATUS(init_rnn_fwd_desc(&rd, prb, fwd_prop, &src_layer_d,
-                &src_iter_d, &src_iter_c_d, &attention_d, &weights_layer_d,
+                nullptr, nullptr, &attention_d, &weights_layer_d,
                 &weights_iter_d, &weights_peephole_d, &weights_projection_d,
-                &bias_d, &dst_layer_d, &dst_iter_d, &dst_iter_c_d));
+                &bias_d, &dst_layer_d, nullptr, nullptr));
     } else {
         // TODO: add stride support for diff_* tensors
         auto diff_src_layer_d = dnn_mem_t::init_md(
@@ -660,14 +671,13 @@ dnnl_status_t init_pd(init_pd_args_t<prb_t> &init_pd_args) {
                 4, dst_iter_c_dims, prb.cfg[DIFF_DST_ITER_C].dt, tag::any);
 
         DNN_SAFE_STATUS(init_rnn_bwd_desc(&rd, prb, prb.prop, &src_layer_d,
-                &src_iter_d, &src_iter_c_d, &attention_d, &weights_layer_d,
+                nullptr, nullptr, &attention_d, &weights_layer_d,
                 &weights_iter_d, &weights_peephole_d, &weights_projection_d,
-                &bias_d, &dst_layer_d, &dst_iter_d, &dst_iter_c_d,
-                &diff_src_layer_d, &diff_src_iter_d, &diff_src_iter_c_d,
-                &diff_attention_d, &diff_weights_layer_d, &diff_weights_iter_d,
-                &diff_weights_peephole_d, &diff_weights_projection_d,
-                &diff_bias_d, &diff_dst_layer_d, &diff_dst_iter_d,
-                &diff_dst_iter_c_d));
+                &bias_d, &dst_layer_d, nullptr, nullptr, &diff_src_layer_d,
+                nullptr, nullptr, &diff_attention_d, &diff_weights_layer_d,
+                &diff_weights_iter_d, &diff_weights_peephole_d,
+                &diff_weights_projection_d, &diff_bias_d, &diff_dst_layer_d,
+                nullptr, nullptr));
     }
 
     auto dnnl_attr = make_benchdnn_dnnl_wrapper(create_dnnl_rnn_attr(prb));
@@ -884,16 +894,28 @@ int doit(const prb_t &prb, res_t *res) {
 
     dnn_mem_t src_layer_dt(src_layer_md, test_engine);
     dnn_mem_t src_layer_attention_dt(src_layer_attention_md, test_engine);
-    dnn_mem_t src_iter_dt(src_iter_md, test_engine);
-    dnn_mem_t src_iter_c_dt(src_iter_c_md, test_engine);
+    dnnl_dims_t src_iter_dims = {prb.n_layer, prb.n_dir(), prb.mb, prb.sic};
+    auto src_iter_d = dnn_mem_t::init_md(
+            4, src_iter_dims, dnnl_f32, tag::abx /* dnnl_ldnc */);
+    dnn_mem_t src_iter_dt(src_iter_d, test_engine);
+    dnnl_dims_t src_iter_c_dims = {prb.n_layer, prb.n_dir(), prb.mb, prb.dhc};
+    auto src_iter_c_d = dnn_mem_t::init_md(
+            4, src_iter_c_dims, dnnl_f32, tag::abx /* dnnl_ldnc */);
+    dnn_mem_t src_iter_c_dt(src_iter_c_d, test_engine);
     dnn_mem_t weights_layer_dt(weights_layer_md, test_engine);
     dnn_mem_t weights_iter_dt(weights_iter_md, test_engine);
     dnn_mem_t weights_peephole_dt(weights_peephole_md, test_engine);
     dnn_mem_t weights_projection_dt(weights_projection_md, test_engine);
     dnn_mem_t bias_dt(bias_md, test_engine);
     dnn_mem_t dst_layer_dt(dst_layer_md, test_engine);
-    dnn_mem_t dst_iter_dt(dst_iter_md, test_engine);
-    dnn_mem_t dst_iter_c_dt(dst_iter_c_md, test_engine);
+    dnnl_dims_t dst_iter_dims = {prb.n_layer, prb.n_dir(), prb.mb, prb.dic};
+    auto dst_iter_d = dnn_mem_t::init_md(
+            4, dst_iter_dims, prb.cfg[DST_ITER].dt, tag::abx /* dnnl_ldnc */);
+    dnn_mem_t dst_iter_dt(dst_iter_d, test_engine);
+    dnnl_dims_t dst_iter_c_dims = {prb.n_layer, prb.n_dir(), prb.mb, prb.dic};
+    auto dst_iter_c_d = dnn_mem_t::init_md(
+            4, dst_iter_c_dims, prb.cfg[DST_ITER].dt, tag::abx /* dnnl_ldnc */);
+    dnn_mem_t dst_iter_c_dt(dst_iter_c_d, test_engine);
     dnn_mem_t workspace_dt(workspace_md, test_engine);
     dnn_mem_t scratchpad_dt(scratchpad_md, test_engine);
 
@@ -901,9 +923,9 @@ int doit(const prb_t &prb, res_t *res) {
             src_layer_md, dnnl_f32, tag::abx /*tnc*/, ref_engine);
     dnn_mem_t src_layer_attention_fp(
             src_layer_attention_md, dnnl_f32, tag::abx /*tnc*/, ref_engine);
-    dnn_mem_t src_iter_fp(src_iter_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+    dnn_mem_t src_iter_fp(src_iter_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
     dnn_mem_t src_iter_c_fp(
-            src_iter_c_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+            src_iter_c_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
     dnn_mem_t weights_layer_fp(
             weights_layer_md, dnnl_f32, tag::abx /*ldigo*/, ref_engine);
     dnn_mem_t weights_iter_fp(
@@ -915,9 +937,9 @@ int doit(const prb_t &prb, res_t *res) {
     dnn_mem_t bias_fp(bias_md, dnnl_f32, tag::abx /*ldgo*/, ref_engine);
     dnn_mem_t dst_layer_fp(
             dst_layer_md, dnnl_f32, tag::abx /*tnc*/, ref_engine);
-    dnn_mem_t dst_iter_fp(dst_iter_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+    dnn_mem_t dst_iter_fp(dst_iter_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
     dnn_mem_t dst_iter_c_fp(
-            dst_iter_c_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+            dst_iter_c_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
 
     dnn_mem_t bwd_weights_layer_dt;
     dnn_mem_t bwd_weights_iter_dt;
@@ -971,16 +993,16 @@ int doit(const prb_t &prb, res_t *res) {
     // Running the forward pass
     args.set(DNNL_ARG_SRC_LAYER, src_layer_dt);
     args.set(DNNL_ARG_AUGRU_ATTENTION, src_layer_attention_dt);
-    args.set(DNNL_ARG_SRC_ITER, src_iter_dt);
-    args.set(DNNL_ARG_SRC_ITER_C, src_iter_c_dt);
+    //    args.set(DNNL_ARG_SRC_ITER, src_iter_dt);
+    //    args.set(DNNL_ARG_SRC_ITER_C, src_iter_c_dt);
     args.set(DNNL_ARG_WEIGHTS_LAYER, weights_layer_dt);
     args.set(DNNL_ARG_WEIGHTS_ITER, weights_iter_dt);
     args.set(DNNL_ARG_WEIGHTS_PEEPHOLE, weights_peephole_dt);
     args.set(DNNL_ARG_WEIGHTS_PROJECTION, weights_projection_dt);
     args.set(DNNL_ARG_BIAS, bias_dt);
     args.set(DNNL_ARG_DST_LAYER, dst_layer_dt);
-    args.set(DNNL_ARG_DST_ITER, dst_iter_dt);
-    args.set(DNNL_ARG_DST_ITER_C, dst_iter_c_dt);
+    //    args.set(DNNL_ARG_DST_ITER, dst_iter_dt);
+    //    args.set(DNNL_ARG_DST_ITER_C, dst_iter_c_dt);
     args.set(DNNL_ARG_WORKSPACE, workspace_dt);
     args.set(DNNL_ARG_SCRATCHPAD, scratchpad_dt);
 
@@ -1056,8 +1078,16 @@ int doit(const prb_t &prb, res_t *res) {
         diff_src_layer_dt = dnn_mem_t(diff_src_layer_md, test_engine);
         diff_src_layer_attention_dt
                 = dnn_mem_t(diff_src_layer_attention_md, test_engine);
-        diff_src_iter_dt = dnn_mem_t(diff_src_iter_md, test_engine);
-        diff_src_iter_c_dt = dnn_mem_t(diff_src_iter_c_md, test_engine);
+        dnnl_dims_t diff_src_iter_dims
+                = {prb.n_layer, prb.n_dir(), prb.mb, prb.sic};
+        auto diff_src_iter_d = dnn_mem_t::init_md(
+                4, diff_src_iter_dims, dnnl_f32, tag::abx /* dnnl_ldnc */);
+        diff_src_iter_dt = dnn_mem_t(diff_src_iter_d, test_engine);
+        dnnl_dims_t diff_src_iter_c_dims
+                = {prb.n_layer, prb.n_dir(), prb.mb, prb.sic};
+        auto diff_src_iter_c_d = dnn_mem_t::init_md(
+                4, diff_src_iter_c_dims, dnnl_f32, tag::abx /* dnnl_ldnc */);
+        diff_src_iter_c_dt = dnn_mem_t(diff_src_iter_c_d, test_engine);
         diff_weights_layer_dt = dnn_mem_t(diff_weights_layer_md, test_engine);
         diff_weights_iter_dt = dnn_mem_t(diff_weights_iter_md, test_engine);
         diff_weights_peephole_dt
@@ -1066,8 +1096,16 @@ int doit(const prb_t &prb, res_t *res) {
                 = dnn_mem_t(diff_weights_projection_md, test_engine);
         diff_bias_dt = dnn_mem_t(diff_bias_md, test_engine);
         diff_dst_layer_dt = dnn_mem_t(diff_dst_layer_md, test_engine);
-        diff_dst_iter_dt = dnn_mem_t(diff_dst_iter_md, test_engine);
-        diff_dst_iter_c_dt = dnn_mem_t(diff_dst_iter_c_md, test_engine);
+        dnnl_dims_t diff_dst_iter_dims
+                = {prb.n_layer, prb.n_dir(), prb.mb, prb.dic};
+        auto diff_dst_iter_d = dnn_mem_t::init_md(4, diff_dst_iter_dims,
+                prb.cfg[DST_ITER].dt, tag::abx /* dnnl_ldnc */);
+        diff_dst_iter_dt = dnn_mem_t(diff_dst_iter_d, test_engine);
+        dnnl_dims_t diff_dst_iter_c_dims
+                = {prb.n_layer, prb.n_dir(), prb.mb, prb.dic};
+        auto diff_dst_iter_c_d = dnn_mem_t::init_md(4, diff_dst_iter_c_dims,
+                prb.cfg[DST_ITER].dt, tag::abx /* dnnl_ldnc */);
+        diff_dst_iter_c_dt = dnn_mem_t(diff_dst_iter_c_d, test_engine);
         scratchpad_dt = dnn_mem_t(bwd_scratchpad_md, test_engine);
 
         dnn_mem_t diff_src_layer_fp(
@@ -1075,9 +1113,9 @@ int doit(const prb_t &prb, res_t *res) {
         dnn_mem_t diff_src_layer_attention_fp(diff_src_layer_attention_md,
                 dnnl_f32, tag::abx /*tnc*/, ref_engine);
         dnn_mem_t diff_src_iter_fp(
-                diff_src_iter_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+                diff_src_iter_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
         dnn_mem_t diff_src_iter_c_fp(
-                diff_src_iter_c_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+                diff_src_iter_c_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
         dnn_mem_t diff_weights_layer_fp(diff_weights_layer_md, dnnl_f32,
                 tag::abx /*ldigo*/, ref_engine);
         dnn_mem_t diff_weights_iter_fp(
@@ -1091,9 +1129,9 @@ int doit(const prb_t &prb, res_t *res) {
         dnn_mem_t diff_dst_layer_fp(
                 diff_dst_layer_md, dnnl_f32, tag::abx /*tnc*/, ref_engine);
         dnn_mem_t diff_dst_iter_fp(
-                diff_dst_iter_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+                diff_dst_iter_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
         dnn_mem_t diff_dst_iter_c_fp(
-                diff_dst_iter_c_md, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
+                diff_dst_iter_c_d, dnnl_f32, tag::abx /*ldnc*/, ref_engine);
 
         SAFE(bwd_weights_iter_dt.reorder(weights_iter_dt), WARN);
         SAFE(bwd_weights_layer_dt.reorder(weights_layer_dt), WARN);
@@ -1142,24 +1180,24 @@ int doit(const prb_t &prb, res_t *res) {
         args.clear();
         args.set(DNNL_ARG_SRC_LAYER, src_layer_dt);
         args.set(DNNL_ARG_AUGRU_ATTENTION, src_layer_attention_dt);
-        args.set(DNNL_ARG_SRC_ITER, src_iter_dt);
-        args.set(DNNL_ARG_SRC_ITER_C, src_iter_c_dt);
+        //        args.set(DNNL_ARG_SRC_ITER, src_iter_dt);
+        //        args.set(DNNL_ARG_SRC_ITER_C, src_iter_c_dt);
         args.set(DNNL_ARG_WEIGHTS_LAYER, bwd_weights_layer_dt);
         args.set(DNNL_ARG_WEIGHTS_ITER, bwd_weights_iter_dt);
         args.set(DNNL_ARG_WEIGHTS_PEEPHOLE, weights_peephole_dt);
         args.set(DNNL_ARG_WEIGHTS_PROJECTION, bwd_weights_projection_dt);
         args.set(DNNL_ARG_BIAS, bias_dt);
         args.set(DNNL_ARG_DST_LAYER, dst_layer_dt);
-        args.set(DNNL_ARG_DST_ITER, dst_iter_dt);
-        args.set(DNNL_ARG_DST_ITER_C, dst_iter_c_dt);
+        //        args.set(DNNL_ARG_DST_ITER, dst_iter_dt);
+        //        args.set(DNNL_ARG_DST_ITER_C, dst_iter_c_dt);
         args.set(DNNL_ARG_DIFF_DST_LAYER, diff_dst_layer_dt);
-        args.set(DNNL_ARG_DIFF_DST_ITER, diff_dst_iter_dt);
-        args.set(DNNL_ARG_DIFF_DST_ITER_C, diff_dst_iter_c_dt);
+        //        args.set(DNNL_ARG_DIFF_DST_ITER, diff_dst_iter_dt);
+        //        args.set(DNNL_ARG_DIFF_DST_ITER_C, diff_dst_iter_c_dt);
         args.set(DNNL_ARG_WORKSPACE, workspace_dt);
         args.set(DNNL_ARG_DIFF_SRC_LAYER, diff_src_layer_dt);
         args.set(DNNL_ARG_DIFF_AUGRU_ATTENTION, diff_src_layer_attention_dt);
-        args.set(DNNL_ARG_DIFF_SRC_ITER, diff_src_iter_dt);
-        args.set(DNNL_ARG_DIFF_SRC_ITER_C, diff_src_iter_c_dt);
+        //        args.set(DNNL_ARG_DIFF_SRC_ITER, diff_src_iter_dt);
+        //        args.set(DNNL_ARG_DIFF_SRC_ITER_C, diff_src_iter_c_dt);
         args.set(DNNL_ARG_DIFF_WEIGHTS_LAYER, diff_weights_layer_dt);
         args.set(DNNL_ARG_DIFF_WEIGHTS_ITER, diff_weights_iter_dt);
         args.set(DNNL_ARG_DIFF_WEIGHTS_PEEPHOLE, diff_weights_peephole_dt);
