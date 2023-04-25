@@ -117,7 +117,6 @@ if(DNNL_WITH_SYCL)
     # Enable linking SYCL kernels.
     if(DNNL_SYCL_CUDA)
         append(CMAKE_SHARED_LINKER_FLAGS "-fsycl-targets=nvptx64-nvidia-cuda")
-        append(CMAKE_STATIC_LINKER_FLAGS "-fsycl-targets=nvptx64-nvidia-cuda")
     endif()
     add_subdirectory(sycl)
 endif()

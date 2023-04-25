@@ -1,5 +1,5 @@
 #===============================================================================
-# Copyright 2019-2022 Intel Corporation
+# Copyright 2019-2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -92,6 +92,11 @@ if(DNNL_SYCL_CUDA)
         foreach(cuda_include_dir ${cuda_include_dirs})
             append(CMAKE_CXX_FLAGS "-idirafter${cuda_include_dir}")
         endforeach()
+    endif()
+
+    if (DNNL_LIBRARY_TYPE STREQUAL "STATIC")
+        # Add a linker option to preserve sycl kernels in the final binary.
+        append(CMAKE_CXX_LINK_FLAGS "-fsycl-targets=nvptx64-nvidia-cuda")
     endif()
 
 elseif(DNNL_SYCL_HIP)
