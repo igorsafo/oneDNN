@@ -87,13 +87,13 @@ void init_vector(std::vector<uint8_t> &v) {
 int number_of_runs = 1;
 
 // Create a MatMul primitive descriptor for the following op:
-// C_u8 = ReLU(sc_A * sc_B[:] * (A_u8 - zp_A) * B_s8) / sc_C + zp_C
+// C_f32 = ReLU(sc_A * sc_B[:] * (A_u8 - zp_A) * B_s8)
 //
 // Here:
 // - Matrices A and C are known to be non-transposed but their M dimension is
 //   not known. They can be activation matrices in an MLP topology and the M
 //   dimension can be the mini-batch dimension.
-// - zp_A and zp_C are zero points for matrices A and C which are stored as
+// - zp_A is a zero point for matrix A which is stored as
 //   uint8_t. These are run-time parameters that are not known at the primitive
 //   creation time.
 // - The B matrix is stored as int8_t, its zero point is 0, and all its
@@ -106,26 +106,26 @@ matmul::primitive_desc matmul_pd_create(
 
     memory::desc a_md({M, K}, memory::data_type::u8, {K, 1}); // M x K layout
     memory::desc b_md({K, N}, memory::data_type::s8, memory::format_tag::any);
-    memory::desc c_md({M, N}, memory::data_type::u8, {N, 1}); // M x N layout
+    memory::desc c_md({M, N}, memory::data_type::f32, {N, 1}); // M x N layout
+    memory::desc bias_md(
+            {1, N}, memory::data_type::f32, memory::format_tag::ab);
 
     // Create attributes and indicate that the alpha and zero points are
     // runtime parameters
     primitive_attr attr;
     attr.set_scales_mask(DNNL_ARG_SRC, /* mask */ 0);
     attr.set_scales_mask(DNNL_ARG_WEIGHTS, /* mask */ 1 << 1);
-    attr.set_scales_mask(DNNL_ARG_DST, /* mask */ 0);
     attr.set_zero_points_mask(DNNL_ARG_SRC, /* mask */ 0);
-    attr.set_zero_points_mask(DNNL_ARG_DST, /* mask */ 0);
     post_ops po;
     po.append_eltwise(algorithm::eltwise_relu, 0.f, 0.f);
     attr.set_post_ops(po);
 
     // Create a MatMul primitive descriptor
-    return matmul::primitive_desc(eng, a_md, b_md, c_md, attr);
+    return matmul::primitive_desc(eng, a_md, b_md, bias_md, c_md, attr);
 }
 
 void prepare_input(memory &A_u8_mem, memory &sc_A_mem, memory &sc_B_mem,
-        memory &sc_C_mem, memory &zp_A_mem, memory &zp_C_mem) {
+        memory &zp_A_mem) {
     int64_t M = A_u8_mem.get_desc().get_dims()[0];
     int64_t N = sc_B_mem.get_desc().get_dims()[0];
     int64_t K = A_u8_mem.get_desc().get_dims()[1];
@@ -137,29 +137,23 @@ void prepare_input(memory &A_u8_mem, memory &sc_A_mem, memory &sc_B_mem,
     init_vector(sc_B);
 
     float sc_A = 0.5f;
-    float sc_C = 0.25f;
-    int32_t zp_A = 128, zp_C = 40;
+    int32_t zp_A = 128;
 
     write_to_dnnl_memory(A_u8.data(), A_u8_mem);
     write_to_dnnl_memory(&zp_A, zp_A_mem);
-    write_to_dnnl_memory(&zp_C, zp_C_mem);
     write_to_dnnl_memory(&sc_A, sc_A_mem);
     write_to_dnnl_memory(sc_B.data(), sc_B_mem);
-    write_to_dnnl_memory(&sc_C, sc_C_mem);
 }
 
-void sanity_check(memory &C_u8_mem, memory &zp_C_mem) {
-    int64_t M = C_u8_mem.get_desc().get_dims()[0];
-    int64_t N = C_u8_mem.get_desc().get_dims()[1];
-    int32_t zp_C = 0;
-    std::vector<uint8_t> C_u8(M * N);
+void sanity_check(memory &C_f32_mem) {
+    int64_t M = C_f32_mem.get_desc().get_dims()[0];
+    int64_t N = C_f32_mem.get_desc().get_dims()[1];
+    std::vector<float> C_f32(M * N);
 
-    read_from_dnnl_memory(C_u8.data(), C_u8_mem);
-    read_from_dnnl_memory(&zp_C, zp_C_mem);
+    read_from_dnnl_memory(C_f32.data(), C_f32_mem);
 
-    // simple check: C_u8 >= zp_C
     for (int64_t i = 0; i < M * N; ++i)
-        if (C_u8[i] < zp_C)
+        if (C_f32[i] < 0)
             throw std::logic_error(
                     "Smoke check failed."
                     "\n\tQuantized value is smaller than the zero point,"
@@ -167,37 +161,34 @@ void sanity_check(memory &C_u8_mem, memory &zp_C_mem) {
 }
 
 void infer(const matmul &matmul_p, int64_t M, int64_t N, int64_t K,
-        const memory &B_s8_mem, const engine &eng) {
+        const memory &B_s8_mem, const memory &bias_f32_mem, const engine &eng) {
     // inputs of the current layer / operation
     memory A_u8_mem({{M, K}, memory::data_type::u8, {K, 1}}, eng);
     memory zp_A_mem({{1}, memory::data_type::s32, {1}}, eng);
-    memory zp_C_mem({{1}, memory::data_type::s32, {1}}, eng);
     memory sc_A_mem({{1}, memory::data_type::f32, {1}}, eng);
     memory sc_B_mem({{N}, memory::data_type::f32, {1}}, eng);
-    memory sc_C_mem({{1}, memory::data_type::f32, {1}}, eng);
 
     // the function below fills dnnl::memory with some values
     // these memories, typically, come from the previous layers / operations
     // with meaningful data inside
-    prepare_input(A_u8_mem, sc_A_mem, sc_B_mem, sc_C_mem, zp_A_mem, zp_C_mem);
+    prepare_input(A_u8_mem, sc_A_mem, sc_B_mem, zp_A_mem);
 
     // output - no initialization required
-    memory C_u8_mem({{M, N}, memory::data_type::u8, {N, 1}}, eng);
+    memory C_f32_mem({{M, N}, memory::data_type::f32, {N, 1}}, eng);
 
     stream s(eng);
     for (int run = 0; run < number_of_runs; ++run)
         matmul_p.execute(s,
                 {{DNNL_ARG_SRC, A_u8_mem}, {DNNL_ARG_WEIGHTS, B_s8_mem},
-                        {DNNL_ARG_DST, C_u8_mem},
+                        {DNNL_ARG_BIAS, bias_f32_mem},
+                        {DNNL_ARG_DST, C_f32_mem},
                         {DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, sc_A_mem},
                         {DNNL_ARG_ATTR_SCALES | DNNL_ARG_WEIGHTS, sc_B_mem},
-                        {DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, sc_C_mem},
-                        {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC, zp_A_mem},
-                        {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_DST, zp_C_mem}});
+                        {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_SRC, zp_A_mem}});
     s.wait();
 
     // a sanity check for the correctness of the output
-    sanity_check(C_u8_mem, zp_C_mem);
+    sanity_check(C_f32_mem);
 }
 
 void inference_int8_matmul(engine::kind engine_kind) {
@@ -209,7 +200,9 @@ void inference_int8_matmul(engine::kind engine_kind) {
 
     // Original weights stored as float in a known format
     std::vector<float> B_f32(K * N);
+    std::vector<float> bias_f32(N);
     init_vector(B_f32);
+    init_vector(bias_f32);
 
     // Pre-packed weights stored as int8_t
     memory B_s8_mem(
@@ -222,6 +215,9 @@ void inference_int8_matmul(engine::kind engine_kind) {
         reorder(B_f32_mem, B_s8_mem).execute(s, B_f32_mem, B_s8_mem);
         s.wait();
     }
+    memory bias_f32_mem(
+            {{1, N}, memory::data_type::f32, memory::format_tag::ab}, eng);
+    write_to_dnnl_memory(bias_f32.data(), bias_f32_mem);
 
     matmul matmul_p(matmul_pd);
 
@@ -235,7 +231,7 @@ void inference_int8_matmul(engine::kind engine_kind) {
     }
 
     for (int64_t M : {1, 100})
-        infer(matmul_p, M, N, K, matmul_B_s8_mem, eng);
+        infer(matmul_p, M, N, K, matmul_B_s8_mem, bias_f32_mem, eng);
 }
 
 int main(int argc, char **argv) {
