@@ -212,7 +212,8 @@ void inference_int8_matmul(engine::kind engine_kind) {
     init_vector(B_f32);
 
     // Pre-packed weights stored as int8_t
-    memory B_s8_mem(matmul_pd.weights_desc(), eng);
+    memory B_s8_mem(
+            {{K, N}, memory::data_type::s8, memory::format_tag::ab}, eng);
     {
         stream s(eng);
         memory B_f32_mem(
@@ -224,8 +225,17 @@ void inference_int8_matmul(engine::kind engine_kind) {
 
     matmul matmul_p(matmul_pd);
 
+    // Weights are pre-packed from ab to matmul optimal tag
+    memory matmul_B_s8_mem(matmul_pd.weights_desc(), eng);
+    {
+        stream s(eng);
+        reorder(B_s8_mem, matmul_B_s8_mem)
+                .execute(s, B_s8_mem, matmul_B_s8_mem);
+        s.wait();
+    }
+
     for (int64_t M : {1, 100})
-        infer(matmul_p, M, N, K, B_s8_mem, eng);
+        infer(matmul_p, M, N, K, matmul_B_s8_mem, eng);
 }
 
 int main(int argc, char **argv) {
